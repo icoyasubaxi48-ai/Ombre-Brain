@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -16,6 +17,7 @@ def _dream_config(base: dict, **overrides) -> dict:
         "base_url": "https://api.deepseek.com",
         "model": "deepseek-v4-flash",
         "api_key": "",
+        "thinking_mode": "disabled",
         "temperature": 0.85,
         "max_tokens": 900,
         "timezone": "Asia/Shanghai",
@@ -113,6 +115,31 @@ async def test_run_due_skips_outside_east_eight_dream_window(test_config):
     result = await DreamEngine(cfg).run_due(mgr, now=now)
 
     assert result == {"status": "skipped", "reason": "outside_dream_window"}
+
+
+@pytest.mark.asyncio
+async def test_dream_model_disables_thinking_by_default(test_config):
+    cfg = _dream_config(test_config, api_key="fake")
+    engine = DreamEngine(cfg)
+    calls = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="我站在一段发亮的雨声里。")
+                    )
+                ]
+            )
+
+    engine.client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    text = await engine._call_dream_model({"daytime_residue": []})
+
+    assert text == "我站在一段发亮的雨声里。"
+    assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
 @pytest.mark.asyncio

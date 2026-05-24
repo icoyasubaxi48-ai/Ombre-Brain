@@ -185,6 +185,7 @@ def load_config(config_path: str = None) -> dict:
             "base_url": "https://api.deepseek.com",
             "model": "deepseek-v4-flash",
             "api_key": "",
+            "thinking_mode": "disabled",
             "temperature": 0.85,
             "max_tokens": 900,
             "timezone": "Asia/Shanghai",

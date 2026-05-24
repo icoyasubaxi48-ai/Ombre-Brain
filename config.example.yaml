@@ -297,6 +297,7 @@ dream:
   base_url: "https://api.deepseek.com"
   model: "deepseek-v4-flash"
   # api_key: ""                   # OMBRE_DREAM_API_KEY overrides
+  thinking_mode: "disabled"
   temperature: 0.85
   max_tokens: 900
   timezone: "Asia/Shanghai"

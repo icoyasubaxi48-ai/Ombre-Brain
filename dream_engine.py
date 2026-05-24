@@ -108,6 +108,7 @@ class DreamEngine:
             or str(cfg.get("model") or "deepseek-v4-flash")
         )
         self.api_key = os.environ.get("OMBRE_DREAM_API_KEY", "") or str(cfg.get("api_key") or "")
+        self.thinking_mode = self._normalize_thinking_mode(cfg.get("thinking_mode", "disabled"))
         self.temperature = float(cfg.get("temperature", 0.85))
         self.max_tokens = int(cfg.get("max_tokens", 900))
         self.timezone_name = str(cfg.get("timezone") or "Asia/Shanghai")
@@ -314,15 +315,18 @@ class DreamEngine:
     async def _call_dream_model(self, payload: dict) -> str:
         if not self.client:
             raise RuntimeError("dream model api key is not configured")
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
+        options = {
+            "model": self.model,
+            "messages": [
                 {"role": "system", "content": DREAM_PROMPT},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-        )
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+        }
+        if self.thinking_mode:
+            options["extra_body"] = {"thinking": {"type": self.thinking_mode}}
+        response = await self.client.chat.completions.create(**options)
         raw = response.choices[0].message.content if response.choices else ""
         cleaned = (raw or "").strip()
         if cleaned.startswith("```"):
@@ -331,6 +335,15 @@ class DreamEngine:
         if not cleaned:
             raise ValueError("dream model returned empty text")
         return cleaned
+
+    @staticmethod
+    def _normalize_thinking_mode(value: Any) -> str:
+        normalized = str(value or "").strip().lower().replace("_", "-")
+        if normalized in {"disabled", "disable", "off", "false", "non-thinking"}:
+            return "disabled"
+        if normalized in {"enabled", "enable", "on", "true", "thinking"}:
+            return "enabled"
+        return ""
 
     def _core_affect_from_materials(self, materials: list[dict]) -> dict:
         if not materials:
