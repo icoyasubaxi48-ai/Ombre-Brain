@@ -119,6 +119,7 @@ class DreamEngine:
             self.tz = ZoneInfo("Asia/Shanghai")
         self.daily_hour = int(cfg.get("daily_hour", 3))
         self.run_window_hours = max(1, int(cfg.get("run_window_hours", 3)))
+        self.daily_probability = _clamp(cfg.get("daily_probability", 0.4), 0.4)
         self.check_interval_minutes = max(5, int(cfg.get("check_interval_minutes", 60)))
         self.material_window_hours = max(1, int(cfg.get("material_window_hours", 48)))
         self.min_material_count = max(1, int(cfg.get("min_material_count", 5)))
@@ -227,6 +228,14 @@ class DreamEngine:
             if event.get("event") == "generated" and event.get("local_date") == date_key:
                 return True
         return False
+
+    def _daily_decision_for_date(self, date_key: str) -> str:
+        if self._record_for_date(date_key):
+            return "generated"
+        for event in self._read_events():
+            if event.get("event") == "probability_skipped" and event.get("local_date") == date_key:
+                return "probability_miss"
+        return ""
 
     def _bucket_created_local(self, bucket: dict) -> datetime | None:
         meta = bucket.get("metadata", {}) or {}
@@ -410,8 +419,16 @@ class DreamEngine:
             return {"status": "skipped", "reason": "missing_api_key"}
         now_local = self._now(now)
         date_key = now_local.date().isoformat()
-        if not force and self._record_for_date(date_key):
-            return {"status": "exists", "date": date_key}
+        if not force:
+            decision = self._daily_decision_for_date(date_key)
+            if decision == "generated":
+                return {"status": "exists", "date": date_key}
+            if decision == "probability_miss":
+                return {
+                    "status": "skipped",
+                    "reason": "daily_probability_already_missed",
+                    "date": date_key,
+                }
         materials, identity_anchor = await self.select_materials(bucket_mgr, now_local)
         if len(materials) < self.min_material_count:
             return {
@@ -419,6 +436,26 @@ class DreamEngine:
                 "reason": "not_enough_materials",
                 "materials": len(materials),
             }
+        if not force:
+            roll = random.random()
+            if roll >= self.daily_probability:
+                decided_at = now_local.astimezone(timezone.utc).isoformat(timespec="seconds")
+                self._log_event(
+                    "probability_skipped",
+                    {
+                        "local_date": date_key,
+                        "decided_at": decided_at,
+                        "probability": self.daily_probability,
+                        "roll": round(roll, 4),
+                        "material_count": len(materials),
+                    },
+                )
+                return {
+                    "status": "skipped",
+                    "reason": "daily_probability_miss",
+                    "date": date_key,
+                    "probability": self.daily_probability,
+                }
 
         payload = self._payload_for(materials, identity_anchor)
         dream_text = await self._call_dream_model(payload)

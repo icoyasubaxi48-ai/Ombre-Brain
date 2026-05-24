@@ -118,6 +118,28 @@ async def test_run_due_skips_outside_east_eight_dream_window(test_config):
 
 
 @pytest.mark.asyncio
+async def test_daily_probability_miss_is_decided_once(test_config):
+    cfg = _dream_config(test_config, api_key="fake", daily_probability=0)
+    mgr = BucketManager(cfg)
+    now = datetime(2026, 5, 25, 3, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+    for index in range(5):
+        await mgr.create(
+            bucket_id=f"recent-memory-{index}",
+            content=f"最近普通记忆 {index}，足够入梦。",
+            created=(now - timedelta(hours=index + 1)).isoformat(timespec="seconds"),
+        )
+    engine = DreamEngine(cfg)
+
+    first = await engine.run_due(mgr, now=now)
+    second = await engine.run_due(mgr, now=now + timedelta(hours=1))
+
+    assert first["reason"] == "daily_probability_miss"
+    assert second["reason"] == "daily_probability_already_missed"
+    assert engine.list_records() == []
+    assert engine._read_events()[-1]["event"] == "probability_skipped"
+
+
+@pytest.mark.asyncio
 async def test_dream_model_disables_thinking_by_default(test_config):
     cfg = _dream_config(test_config, api_key="fake")
     cfg["identity"] = {"ai_name": "Ombre", "user_display_name": "小雨"}

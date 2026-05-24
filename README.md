@@ -42,7 +42,7 @@
 | Memory Edge | 自动生成显式记忆关系边，Gateway 和 `breath()` 可补一跳相关记忆 | `memory_edges.py`、`reflection_engine.py` |
 | 长期锚点 Anchor | 介于普通浮现和 pinned/permanent 之间的长期记忆位。`anchor=true` 的普通 bucket 不混入普通权重池，`breath()` 会用独立槽位少量带出，适合经过时间验证、未来仍需要被想起的关系锚点或项目锚点 | `server.py`、`dashboard.html` |
 | Relationship Weather | 日印象保存为 `type=feel`，默认不单独注入，可在面板观察或按配置开启注入 | `reflection_engine.py` |
-| Night Dream | 后台夜里用小模型生成潜伏梦，默认走 DeepSeek 官方 API `deepseek-v4-flash`；素材来自最近普通记忆和 whisper；`breath()` 命中共振时按 `===== 梦境 =====` 块浮现一次，Dashboard 只显示做梦记录不展示正文 | `dream_engine.py`、`server.py`、`dashboard.html` |
+| Night Dream | 后台夜里用小模型生成潜伏梦，默认走 DeepSeek 官方 API `deepseek-v4-flash`；素材来自最近普通记忆和 whisper，素材够时按每日概率决定是否入梦；`breath()` 命中共振时按 `===== 梦境 =====` 块浮现一次，Dashboard 只显示做梦记录不展示正文 | `dream_engine.py`、`server.py`、`dashboard.html` |
 | 年轮 comments | 将再次阅读某条记忆时的感受挂到源 bucket 的 `metadata.comments` 下；旧 feel 可迁移成源记忆年轮 | `bucket_manager.py`、`server.py`、`dashboard.html` |
 | whisper | 无源碎碎念/悄悄话独立保存为 `type=feel + whisper` 标签，可用 `breath(domain="whisper")` 单独读取 | `server.py` |
 | Dashboard 编辑 | 支持正文编辑、前端用户年轮写入/删除、日印象月历、Persona 面板、网络图、手动 reflect；日印象页按日期显示完整日印象，不再做情绪天气图 | `dashboard.html`、`server.py` |

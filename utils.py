@@ -191,6 +191,7 @@ def load_config(config_path: str = None) -> dict:
             "timezone": "Asia/Shanghai",
             "daily_hour": 3,
             "run_window_hours": 3,
+            "daily_probability": 0.4,
             "check_interval_minutes": 60,
             "min_material_count": 5,
             "material_window_hours": 48,

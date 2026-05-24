@@ -1491,6 +1491,10 @@
         <input type="number" id="cfg-dream-hour" min="0" max="23" />
       </div>
       <div class="config-row">
+        <label>做梦概率</label>
+        <input type="number" id="cfg-dream-prob" min="0" max="1" step="0.05" />
+      </div>
+      <div class="config-row">
         <label>素材条数</label>
         <input type="number" id="cfg-dream-min" min="1" max="20" />
       </div>
@@ -2647,6 +2651,7 @@ async function loadConfig() {
     document.getElementById('cfg-dream-key').placeholder = '当前: ' + (cfg.dream.api_key_masked || (cfg.dream.api_ready ? '***' : '未设置'));
     document.getElementById('cfg-dream-key').value = '';
     document.getElementById('cfg-dream-hour').value = cfg.dream.daily_hour ?? 3;
+    document.getElementById('cfg-dream-prob').value = cfg.dream.daily_probability ?? 0.4;
     document.getElementById('cfg-dream-min').value = cfg.dream.min_material_count || 5;
     document.getElementById('cfg-dream-window').value = cfg.dream.material_window_hours || 48;
     document.getElementById('cfg-dream-anchor').value = cfg.dream.identity_anchor_id || '';
@@ -2665,6 +2670,10 @@ async function loadConfig() {
 async function saveConfig(persist) {
   function numberValue(id, fallback) {
     var n = parseInt(document.getElementById(id).value, 10);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  function floatValue(id, fallback) {
+    var n = parseFloat(document.getElementById(id).value);
     return Number.isFinite(n) ? n : fallback;
   }
 
@@ -2687,6 +2696,7 @@ async function saveConfig(persist) {
       model: document.getElementById('cfg-dream-model').value,
       base_url: document.getElementById('cfg-dream-url').value,
       daily_hour: numberValue('cfg-dream-hour', 3),
+      daily_probability: floatValue('cfg-dream-prob', 0.4),
       min_material_count: numberValue('cfg-dream-min', 5),
       material_window_hours: numberValue('cfg-dream-window', 48),
       identity_anchor_id: document.getElementById('cfg-dream-anchor').value,
