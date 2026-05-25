@@ -65,3 +65,12 @@ def test_dashboard_config_number_zero_values_are_preserved():
     assert "cfg.merge_threshold || 75" not in load_block
     assert "parseFloat(document.getElementById('cfg-dehy-temp').value) || 0.1" not in save_block
     assert "parseInt(document.getElementById('cfg-merge').value) || 75" not in save_block
+
+
+def test_dashboard_import_file_input_resets_after_selection():
+    html = Path("dashboard.html").read_text(encoding="utf-8")
+    import_block = html.split("// --- Import functions ---", 1)[1].split("async function pollImportStatus", 1)[0]
+
+    assert "const selectedFile = fileInput.files[0];" in import_block
+    assert "fileInput.value = '';" in import_block
+    assert "startImport(selectedFile);" in import_block

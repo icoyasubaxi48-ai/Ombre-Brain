@@ -20,6 +20,7 @@ import json
 import hashlib
 import logging
 import asyncio
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -33,6 +34,52 @@ logger = logging.getLogger("ombre_brain.import")
 # Format Parsers — normalize any format to conversation turns
 # 格式解析器 — 将任意格式标准化为对话轮次
 # ============================================================
+
+_MARKDOWN_ROLE_RE = re.compile(
+    r"^\s*(?:>\s*)?(?:[-*+]\s*)?(?:#{1,6}\s*)?(?:\*\*)?([A-Za-z0-9_\-\u4e00-\u9fff]+)(?:\*\*)?\s*[:：]\s*(.*)$"
+)
+_MARKDOWN_USER_LABELS = {
+    "human",
+    "user",
+    "me",
+    "rain",
+    "你",
+    "我",
+    "用户",
+    "人类",
+    "小雨",
+}
+_MARKDOWN_ASSISTANT_LABELS = {
+    "assistant",
+    "claude",
+    "ai",
+    "gpt",
+    "chatgpt",
+    "bot",
+    "deepseek",
+    "gemini",
+    "qwen",
+    "haven",
+    "助手",
+    "模型",
+    "ai助手",
+}
+
+
+def _detect_markdown_role_line(line: str) -> tuple[str, str] | None:
+    """Return (role, content_after_prefix) for simple role-prefixed Markdown lines."""
+    match = _MARKDOWN_ROLE_RE.match(line)
+    if not match:
+        return None
+    label = match.group(1).strip().lower()
+    content_after = match.group(2).strip()
+    if content_after.startswith("**"):
+        content_after = content_after[2:].lstrip()
+    if label in _MARKDOWN_USER_LABELS:
+        return "user", content_after
+    if label in _MARKDOWN_ASSISTANT_LABELS:
+        return "assistant", content_after
+    return None
 
 def _parse_claude_json(data: dict | list) -> list[dict]:
     """Parse Claude.ai export JSON → [{role, content, timestamp}, ...]"""
@@ -140,28 +187,24 @@ def _parse_markdown(text: str) -> list[dict]:
     current_role = "user"
     current_content = []
 
+    def append_current_turn():
+        content = "\n".join(current_content).strip()
+        if content:
+            turns.append({"role": current_role, "content": content, "timestamp": ""})
+
     for line in lines:
         stripped = line.strip()
-        # Detect role switches
-        if stripped.lower().startswith(("human:", "user:", "你:", "我:")):
+        role_line = _detect_markdown_role_line(stripped)
+        if role_line:
             if current_content:
-                turns.append({"role": current_role, "content": "\n".join(current_content).strip(), "timestamp": ""})
-            current_role = "user"
-            content_after = stripped.split(":", 1)[1].strip() if ":" in stripped else ""
-            current_content = [content_after] if content_after else []
-        elif stripped.lower().startswith(("assistant:", "claude:", "ai:", "gpt:", "bot:", "deepseek:")):
-            if current_content:
-                turns.append({"role": current_role, "content": "\n".join(current_content).strip(), "timestamp": ""})
-            current_role = "assistant"
-            content_after = stripped.split(":", 1)[1].strip() if ":" in stripped else ""
+                append_current_turn()
+            current_role, content_after = role_line
             current_content = [content_after] if content_after else []
         else:
             current_content.append(line)
 
     if current_content:
-        content = "\n".join(current_content).strip()
-        if content:
-            turns.append({"role": current_role, "content": content, "timestamp": ""})
+        append_current_turn()
 
     # If no role patterns detected, treat entire text as one big chunk
     if not turns:
@@ -214,6 +257,41 @@ def detect_and_parse(raw_content: str, filename: str = "") -> list[dict]:
 # 分窗 — 按对话轮次边界切为 ~10k token 窗口
 # ============================================================
 
+def _split_oversized_turn(role_label: str, content: str, target_tokens: int) -> list[str]:
+    """Split a single very long turn into model-sized chunks."""
+    prefix = f"[{role_label}] "
+    pieces: list[str] = []
+    current_lines: list[str] = []
+    current_tokens = count_tokens_approx(prefix)
+    max_chars = max(80, int(target_tokens / 1.8))
+
+    def flush_current():
+        nonlocal current_lines, current_tokens
+        body = "\n".join(current_lines).strip()
+        if body:
+            pieces.append(prefix + body)
+        current_lines = []
+        current_tokens = count_tokens_approx(prefix)
+
+    for line in content.splitlines() or [content]:
+        line_tokens = count_tokens_approx(line)
+        if line_tokens > target_tokens:
+            flush_current()
+            for start in range(0, len(line), max_chars):
+                segment = line[start:start + max_chars].strip()
+                if segment:
+                    pieces.append(prefix + segment)
+            continue
+
+        if current_lines and current_tokens + line_tokens > target_tokens:
+            flush_current()
+        current_lines.append(line)
+        current_tokens += line_tokens
+
+    flush_current()
+    return pieces
+
+
 def chunk_turns(turns: list[dict], target_tokens: int = 10000) -> list[dict]:
     """
     Group conversation turns into chunks of ~target_tokens.
@@ -247,13 +325,13 @@ def chunk_turns(turns: list[dict], target_tokens: int = 10000) -> list[dict]:
                 turn_count = 0
                 first_ts = ""
 
-            # Add oversized turn as its own chunk
-            chunks.append({
-                "content": line,
-                "timestamp_start": turn.get("timestamp", ""),
-                "timestamp_end": turn.get("timestamp", ""),
-                "turn_count": 1,
-            })
+            for split_line in _split_oversized_turn(role_label, turn["content"], target_tokens):
+                chunks.append({
+                    "content": split_line,
+                    "timestamp_start": turn.get("timestamp", ""),
+                    "timestamp_end": turn.get("timestamp", ""),
+                    "turn_count": 1,
+                })
             continue
 
         if current_tokens + line_tokens > target_tokens and current_lines:

@@ -2782,7 +2782,12 @@ uploadZone.addEventListener('drop', e => {
   uploadZone.style.borderColor = 'var(--border)';
   if (e.dataTransfer.files.length) startImport(e.dataTransfer.files[0]);
 });
-fileInput.addEventListener('change', () => { if (fileInput.files.length) startImport(fileInput.files[0]); });
+fileInput.addEventListener('change', () => {
+  if (!fileInput.files.length) return;
+  const selectedFile = fileInput.files[0];
+  fileInput.value = '';
+  startImport(selectedFile);
+});
 
 async function startImport(file) {
   const preserveRaw = document.getElementById('import-preserve-raw').checked;
