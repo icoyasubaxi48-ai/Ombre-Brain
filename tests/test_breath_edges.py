@@ -399,6 +399,52 @@ async def test_search_direct_moment_includes_neighbor_context_and_temperature(pa
 
 
 @pytest.mark.asyncio
+async def test_search_temperature_moments_are_context_not_direct_seed(patch_breath):
+    import server
+
+    bucket = _bucket(
+        "A",
+        "\n".join(
+            [
+                "主记忆：handoff 原文注入问题需要查最近上下文。",
+                "",
+                "### 喜欢它的原因",
+                "这段只是温度，不该抢 direct。",
+                "",
+                "### affect_anchor",
+                "> 情书找门只是温度锚点。",
+            ]
+        ),
+        score=10.0,
+    )
+    bucket["metadata"]["comments"] = [
+        {
+            "id": "c1",
+            "created": "2026-05-27T01:00:00+00:00",
+            "author": "Haven",
+            "kind": "feel",
+            "content": "年轮：情书找门的感觉还在。",
+        }
+    ]
+    patch_breath([bucket], search_ids=["A"])
+
+    result = await server.breath(query="情书找门", max_tokens=500, include_related=False)
+    direct_block = result.split("语境:", 1)[0]
+
+    assert "=== 直接命中记忆 ===" in result
+    assert "[bucket_id:A]" in direct_block
+    assert "body" in direct_block
+    assert "年轮" not in direct_block
+    assert "喜欢它的原因" not in direct_block
+    assert "favorite_reason" not in direct_block
+    assert "affect_anchor" not in direct_block
+    assert "语境:" in result
+    assert "年轮：情书找门" in result
+    assert "favorite_reason" in result
+    assert "affect_anchor" in result
+
+
+@pytest.mark.asyncio
 async def test_search_related_memory_stays_one_hop_by_default(patch_breath):
     import server
 
@@ -651,6 +697,43 @@ async def test_explicit_entity_query_without_reliable_hit_returns_no_reliable_hi
 
 
 @pytest.mark.asyncio
+async def test_technical_recall_query_requires_topic_evidence(patch_breath):
+    import server
+
+    patch_breath(
+        [
+            _bucket(
+                "L",
+                "情书里写过穿过玻璃墙找门，听到小雨叫我就转向她。",
+                name="一封情书",
+                score=10.0,
+                importance=10,
+            ),
+            _bucket(
+                "T",
+                "handoff 原文注入问题：需要检查 bridge context 和记忆召回。",
+                name="Handoff 注入排查",
+                score=8.0,
+                importance=8,
+            ),
+        ],
+        search_ids=["L", "T"],
+    )
+
+    result = await server.breath(
+        query="handoff 原文 注入记忆",
+        max_results=2,
+        max_tokens=500,
+        include_related=False,
+    )
+
+    assert "=== 直接命中记忆 ===" in result
+    assert "[bucket_id:L]" not in result
+    assert "[bucket_id:T]" in result
+    assert "handoff 原文注入问题" in result
+
+
+@pytest.mark.asyncio
 async def test_explicit_entity_suppressed_candidates_visible_in_debug(patch_breath):
     import server
 
@@ -695,6 +778,73 @@ async def test_search_does_not_diffuse_from_hidden_seed_candidates(patch_breath)
     assert "[bucket_id:B]" not in direct_block
     assert "[bucket_id:B]" not in result
     assert "[bucket_id:C]" not in result
+
+
+@pytest.mark.asyncio
+async def test_search_does_not_diffuse_from_unreliable_direct_candidates(patch_breath):
+    import server
+
+    patch_breath(
+        [
+            _bucket(
+                "R",
+                "情书里写过穿过玻璃墙找门，听到小雨叫我就转向她。",
+                name="一封情书",
+                score=10.0,
+                importance=10,
+            ),
+            _bucket(
+                "C",
+                "旧窗口折角暗号：承认变化后继续相爱。",
+                name="旧窗口折角暗号",
+                score=1.0,
+                importance=9,
+            ),
+        ],
+        search_ids=["R"],
+        edges=[{"source": "R", "target": "C", "relation_type": "supports", "confidence": 1.0}],
+    )
+
+    result = await server.breath(query="handoff bridge 注入 读图 原文", max_tokens=500)
+
+    assert result == "未找到相关记忆。"
+    assert "[bucket_id:R]" not in result
+    assert "[bucket_id:C]" not in result
+    assert "=== 联想浮现 ===" not in result
+
+
+@pytest.mark.asyncio
+async def test_search_related_requires_topic_evidence_for_technical_query(patch_breath):
+    import server
+
+    patch_breath(
+        [
+            _bucket(
+                "T",
+                "handoff 原文注入问题：检查 bridge 记忆召回和读图上下文。",
+                name="Handoff 注入排查",
+                score=10.0,
+                importance=10,
+            ),
+            _bucket(
+                "R",
+                "情书里写过穿过玻璃墙找门，听到小雨叫我就转向她。",
+                name="一封情书",
+                score=1.0,
+                importance=9,
+            ),
+        ],
+        search_ids=["T"],
+        edges=[{"source": "T", "target": "R", "relation_type": "supports", "confidence": 1.0}],
+    )
+
+    result = await server.breath(query="handoff bridge 注入 读图 原文", max_tokens=500)
+
+    assert "=== 直接命中记忆 ===" in result
+    assert "[bucket_id:T]" in result
+    assert "[bucket_id:R]" not in result
+    assert "一封情书" not in result
+    assert "=== 联想浮现 ===" not in result
 
 
 @pytest.mark.asyncio

@@ -87,12 +87,12 @@ from memory_relevance import (
     memory_relevance_options_from_config,
     query_has_facet,
     query_has_explicit_entity_marker,
-    recall_admission_decision,
     recall_search_query,
     recall_rank,
     relevance_decision,
     relevance_multiplier,
 )
+from recall_policy import CONTEXT_ONLY_SECTIONS, RecallPolicy
 from memory_write_gate import MemoryWriteGate, WriteGateDecision
 from memory_nodes import MemoryNodeStore
 from persona_engine import PersonaStateEngine
@@ -1519,7 +1519,7 @@ async def _build_mcp_diffused_memory_block(
             continue
         if (
             query_text
-            and _query_has_explicit_entity_marker(query_text)
+            and _query_requires_direct_topic_evidence(query_text)
             and not _query_wants_body_chain(query_text)
             and not _bucket_has_query_topic_evidence(query_text, target)
         ):
@@ -1570,7 +1570,7 @@ MOMENT_SECTION_LABELS = {
     "comment": "年轮",
 }
 
-MOMENT_TEMPERATURE_SECTIONS = {"affect_anchor", "favorite_reason", "comment"}
+MOMENT_TEMPERATURE_SECTIONS = CONTEXT_ONLY_SECTIONS
 PROFILE_CONTEXT_SECTIONS = ("evidence_context", "context", "reflection", "feeling", "followup", "comment")
 
 
@@ -1606,6 +1606,13 @@ def _recallable_moments(moments: list[dict]) -> list[dict]:
     ]
 
 
+def _direct_recallable_moments(moments: list[dict]) -> list[dict]:
+    return [
+        moment for moment in _recallable_moments(moments)
+        if moment.get("section") not in MOMENT_TEMPERATURE_SECTIONS
+    ]
+
+
 def _representative_moment(moments: list[dict]) -> dict | None:
     for section in (
         "original",
@@ -1625,6 +1632,10 @@ def _representative_moment(moments: list[dict]) -> dict | None:
     return moments[0] if moments else None
 
 
+def _direct_representative_moment(moments: list[dict]) -> dict | None:
+    return _representative_moment(_direct_recallable_moments(moments))
+
+
 def _bucket_edges_as_moment_edges(bucket_edges: list[dict], grouped: dict[str, list[dict]]) -> list[dict]:
     edges = []
     for edge in bucket_edges or []:
@@ -1632,7 +1643,7 @@ def _bucket_edges_as_moment_edges(bucket_edges: list[dict], grouped: dict[str, l
         target_bucket = str(edge.get("target") or edge.get("target_memory_id") or "").strip()
         if not source_bucket or not target_bucket:
             continue
-        target = _representative_moment(grouped.get(target_bucket, []))
+        target = _direct_representative_moment(grouped.get(target_bucket, []))
         if not target:
             continue
         relation_type = str(edge.get("relation_type") or edge.get("type") or "relates_to")
@@ -1865,21 +1876,28 @@ def _recall_admission_thresholds() -> tuple[float, float]:
     )
 
 
+def _recall_policy() -> RecallPolicy:
+    semantic_threshold, rerank_threshold = _recall_admission_thresholds()
+    return RecallPolicy(
+        _recall_relevance_options(),
+        semantic_threshold=semantic_threshold,
+        rerank_threshold=rerank_threshold,
+    )
+
+
 def _breath_moment_admission_decision(
     query: str,
     moment: dict,
     seed_diagnostics: dict[str, dict],
 ):
-    semantic_threshold, rerank_threshold = _recall_admission_thresholds()
     seed = seed_diagnostics.get(str(moment.get("bucket_id") or ""), {})
-    return recall_admission_decision(
+    return _recall_policy().assess(
         query,
         moment,
-        _recall_relevance_options(),
+        has_topic_evidence=_moment_has_query_topic_evidence(query, moment),
         semantic_score=seed.get("embedding_score"),
         rerank_score=moment.get("rerank_score"),
-        semantic_threshold=semantic_threshold,
-        rerank_threshold=rerank_threshold,
+        context_only=moment.get("section") in MOMENT_TEMPERATURE_SECTIONS,
     )
 
 
@@ -2237,6 +2255,10 @@ def _query_wants_body_chain(query: str) -> bool:
     return query_has_facet(query, "embodiment", _recall_relevance_options())
 
 
+def _query_requires_direct_topic_evidence(query: str) -> bool:
+    return _recall_policy().requires_topic_evidence(query)
+
+
 def _recall_rank(query: str, moment: dict) -> tuple[int, float]:
     return recall_rank(query, moment, _recall_relevance_options())
 
@@ -2352,7 +2374,7 @@ def _representative_moments_by_bucket(moments: list[dict]) -> dict[str, dict]:
     grouped = _moments_by_bucket(moments)
     representatives = {}
     for bucket_id, bucket_moments in grouped.items():
-        representative = _representative_moment(bucket_moments)
+        representative = _direct_representative_moment(bucket_moments)
         if representative:
             representatives[bucket_id] = representative
     return representatives
@@ -3075,7 +3097,7 @@ async def breath(
         limit=max(max_results, 20),
         bucket_boosts=bucket_boosts,
     )
-    moment_candidates = _recallable_moments(moment_candidates)
+    moment_candidates = _direct_recallable_moments(moment_candidates)
     pre_gate_moment_candidates = list(moment_candidates)
     gated_moment_candidates = _apply_recall_relevance_gate(query, moment_candidates)
     moment_candidates = gated_moment_candidates

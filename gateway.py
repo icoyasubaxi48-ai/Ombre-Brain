@@ -40,12 +40,11 @@ from memory_relevance import (
     facets_for_text,
     memory_relevance_options_from_config,
     query_has_facet,
-    query_has_explicit_entity_marker,
-    recall_admission_decision,
     recall_rank,
     recall_search_query,
     relevance_multiplier,
 )
+from recall_policy import CONTEXT_ONLY_SECTIONS, RecallPolicy
 from memory_nodes import MemoryNodeStore
 from persona_engine import PersonaStateEngine
 from reranker_engine import RerankerEngine
@@ -98,7 +97,7 @@ MOMENT_SECTION_LABELS = {
     "favorite_reason": "favorite_reason",
     "comment": "year_ring",
 }
-MOMENT_TEMPERATURE_SECTIONS = {"affect_anchor", "favorite_reason", "comment"}
+MOMENT_TEMPERATURE_SECTIONS = CONTEXT_ONLY_SECTIONS
 PROFILE_CONTEXT_SECTIONS = ("evidence_context", "context", "reflection", "feeling", "followup", "comment")
 WEAK_RECALL_TOPIC_TERMS = {
     "进度",
@@ -231,6 +230,11 @@ class GatewayService:
         )
         self.recall_admission_rerank_score = self._clamp(
             float(self.gateway_cfg.get("recall_admission_rerank_score", 0.65))
+        )
+        self.recall_policy = RecallPolicy(
+            self.relevance_options,
+            semantic_threshold=self.recall_admission_semantic_score,
+            rerank_threshold=self.recall_admission_rerank_score,
         )
         self.edge_min_confidence = float(self.gateway_cfg.get("edge_min_confidence", 0.55))
         self.upstream_key_cooldown_seconds = max(
@@ -2742,11 +2746,7 @@ class GatewayService:
         return hidden[: max(0, min(2, self.inject_max_cards))]
 
     def _query_requires_topic_evidence(self, query: str) -> bool:
-        return self._query_has_explicit_entity_marker(query)
-
-    @staticmethod
-    def _query_has_explicit_entity_marker(query: str) -> bool:
-        return query_has_explicit_entity_marker(query)
+        return self.recall_policy.requires_topic_evidence(query)
 
     def _moment_has_query_topic_evidence(self, query: str, moment: dict) -> bool:
         terms = self._specific_query_terms(query)
@@ -3322,38 +3322,20 @@ class GatewayService:
             or keyword_score >= self.high_confidence_keyword_score
         )
 
-    def _recall_admission_decision(
-        self,
-        query: str,
-        node: dict,
-        *,
-        semantic_score: float | None = None,
-        rerank_score: float | None = None,
-        high_confidence_edge: bool = False,
-    ):
-        return recall_admission_decision(
-            query,
-            node,
-            self.relevance_options,
-            semantic_score=semantic_score,
-            rerank_score=rerank_score,
-            high_confidence_edge=high_confidence_edge,
-            semantic_threshold=self.recall_admission_semantic_score,
-            rerank_threshold=self.recall_admission_rerank_score,
-        )
-
     def _admit_bucket_for_recall(self, query: str, item: dict) -> bool:
         bucket = item.get("bucket") if isinstance(item, dict) else None
         if not isinstance(bucket, dict):
             return False
-        decision = self._recall_admission_decision(
+        decision = self.recall_policy.assess(
             query,
             self._bucket_relevance_node(bucket),
+            has_topic_evidence=self._bucket_has_query_topic_evidence(query, bucket),
             semantic_score=item.get("semantic_score"),
             rerank_score=item.get("rerank_score"),
         )
         item["admission_reason"] = decision.reason
-        return decision.admit
+        item["recall_policy_debug"] = decision.debug
+        return decision.admit_direct
 
     def _admit_moment_for_recall(
         self,
@@ -3366,13 +3348,16 @@ class GatewayService:
         if admitted_bucket_ids and bucket_id in admitted_bucket_ids:
             moment["admission_reason"] = "admitted_bucket"
             return True
-        decision = self._recall_admission_decision(
+        decision = self.recall_policy.assess(
             query,
             moment,
+            has_topic_evidence=self._moment_has_query_topic_evidence(query, moment),
             rerank_score=moment.get("rerank_score"),
+            context_only=moment.get("section") in MOMENT_TEMPERATURE_SECTIONS,
         )
         moment["admission_reason"] = decision.reason
-        return decision.admit
+        moment["recall_policy_debug"] = decision.debug
+        return decision.admit_direct
 
     def _get_keyword_candidates(self, query: str, buckets: list[dict]) -> dict[str, float]:
         scored = []

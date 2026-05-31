@@ -176,6 +176,54 @@ DEFAULT_CONFLICTS = {
     "communication_action": ("hardware_protocol",),
 }
 
+TECHNICAL_RECALL_STRONG_TERMS = frozenset(
+    {
+        "handoff",
+        "bridge",
+        "router",
+        "gateway",
+        "mcp",
+        "recall",
+        "rerank",
+        "embedding",
+        "bucket",
+        "candidate",
+        "edge",
+        "diffusion",
+        "injection",
+        "注入",
+        "召回",
+        "检索",
+        "扩散",
+        "候选",
+        "显式边",
+    }
+)
+
+TECHNICAL_RECALL_SUPPORT_TERMS = frozenset(
+    {
+        "memory",
+        "context",
+        "image",
+        "original",
+        "raw",
+        "记忆",
+        "上下文",
+        "图片",
+        "读图",
+        "原文",
+    }
+)
+
+TECHNICAL_RECALL_EVIDENCE_TERMS = frozenset(
+    {
+        "original",
+        "raw",
+        "读图",
+        "原文",
+    }
+)
+
 
 @dataclass(frozen=True)
 class MemoryRelevanceOptions:
@@ -430,6 +478,14 @@ def query_has_explicit_entity_marker(query: str) -> bool:
     if leading_word in sentence_starters:
         return False
     return True
+
+
+def query_has_technical_recall_marker(query: str) -> bool:
+    text = str(query or "").lower()
+    if any(term in text for term in TECHNICAL_RECALL_STRONG_TERMS):
+        return True
+    support_hits = {term for term in TECHNICAL_RECALL_SUPPORT_TERMS if term in text}
+    return len(support_hits) >= 2 and bool(support_hits & TECHNICAL_RECALL_EVIDENCE_TERMS)
 
 
 def recall_admission_decision(
