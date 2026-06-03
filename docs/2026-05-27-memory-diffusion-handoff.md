@@ -757,11 +757,13 @@ python scripts/build_moment_graph.py --incremental
 - VPS 受控写入：160 buckets，276 moments，写入 12 条 `local_graph:`。
 - `9be98de Preserve generated moment graph edges on refresh`：修复 `upsert_bucket()` / runtime refresh 会删掉 worker 边的问题。
 - `server._refresh_moment_graph()` live 验证后仍有 `runtime_local_graph_edges: 12`，DB 里也仍是 12。
+- `f151690 Add moment graph dry-run diagnostics`：worker 支持 `--diagnostics-file` JSONL 观察日志；VPS dry-run 结果为 160 buckets、276 moments、候选 12、写入 0，DB 仍是 12 条 `local_graph:`。
+- VPS 已接 `ombre-moment-graph-dryrun.timer`：启动后 10 分钟、之后每 6 小时跑一次 dry-run 诊断，写 `/state/moment_graph_worker_diagnostics.jsonl`，不带 `--write`。
 
-仍未做：
+当前策略：
 
-- 还没有接 cron / systemd timer。
-- 暂时不让 worker 自动写入；下一步如果要自动化，先加 dry-run 日志观察，再决定是否按低频 `--write`。
+- 暂时不让 worker 自动写入。
+- 如果后续要自动 `--write`，先观察 dry-run JSONL 里 `edge_fingerprint_changed`、候选数量和 sample_edges 是否稳定。
 
 ### 2. Typed edge + path scoring
 
