@@ -820,7 +820,7 @@ source_ref:
 
 当前召回语义：
 
-- 命中节点展示压缩节点。
+- 可靠 direct 命中按 bucket 渲染：短桶原文、长桶 moment + 原文窗口、高价值/细节 query 脱水胶囊。
 - 有 `source_ref` 时读取附近约 500 字证据窗。
 - 没有 `source_ref` 时降级使用 MD moment 文本。
 
@@ -861,7 +861,7 @@ python -m pytest tests/test_gateway.py tests/test_breath_edges.py tests/test_mem
 python -m py_compile gateway.py server.py memory_relevance.py memory_diffusion.py
 ```
 
-4. 若要继续实现，优先抽共享 recall query planner，不要继续让 `server.py` / `gateway.py` 各自复制 query gate。
+4. 共享 query planner 已有 `RecallPolicy.plan_query()`；若继续改 recall gate，优先扩这个入口，不要让 `server.py` / `gateway.py` 重新分叉。
 5. 若要排查 Gateway 注入，先看 `GET /api/debug/injections`。
 6. 若要继续做图结构，再做本地 `moment graph worker`，不要把 LLM 建边塞进 `breath()`。
 7. 若要调 profile_fact，先用 `introspection(created_date="YYYY-MM-DD")` 找证据桶，再手动调用 `profile_fact(...)`。
@@ -879,9 +879,17 @@ python -m py_compile gateway.py server.py memory_relevance.py memory_diffusion.p
 - `Diffused / Related` 是联想层：永远只给摘要和路径，不搬远处整桶原文。
 - `Dream` 是浮现层：永远返回梦境原文，不在 memory 层主动截断；只受模型上下文窗口影响。
 
-### 先做的配置轴
+### direct_render_mode 配置轴
 
-先加 `direct_render_mode`，建议三档：
+已完成。新增提交：
+
+```text
+e26afa8 Add auto direct bucket rendering
+f375d06 Add source refs for memory moments
+4e896b3 Clamp source ref windows to bucket content
+```
+
+当前支持三档：
 
 ```yaml
 gateway:
@@ -894,7 +902,7 @@ gateway:
 - `compact`：长桶只给命中 moment + 原文窗口，尽量少塞。
 - `full`：可靠 direct 尽量整桶，太长再脱水。
 
-`breath()` 也应提供同名参数，默认 `auto`，让 MCP 和 Gateway 的直命中展示规则一致。
+`breath()` 也提供同名参数，默认 `auto`，让 MCP 和 Gateway 的直命中展示规则一致。
 
 ### 暂缓的配置轴
 
@@ -916,3 +924,9 @@ gateway:
 - direct 最终展示按 bucket 渲染；同一 bucket 多个 moment 命中时只展示一次。
 - 脱水胶囊应单独 cache，避免和扩散摘要的短 summary 混用。
 - 扩散输出继续用 compact summary，不能因为 direct 改成原文而变吵。
+
+当前剩余更像观察和体验调参，不是主链路缺口：
+
+- Dashboard 加只读观察面板：query 命中 moment、direct 渲染形状、diffusion path、被 gate 掉的原因。
+- 若小雨仍怀念 main 的“整桶味道”，再单独加 `retrieval_mode: bucket`，不要和 graph recall 的调参混在一轮。
+- 外部 transcript / raw chat source 若要接入，再把 `source_ref.source` 从 `bucket_content` 扩到 transcript 文件。
