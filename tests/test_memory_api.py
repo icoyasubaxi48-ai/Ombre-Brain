@@ -543,6 +543,45 @@ async def test_api_recall_debug_returns_query_moment_candidates(monkeypatch, buc
 
 
 @pytest.mark.asyncio
+async def test_api_gateway_injections_proxies_dashboard_request(monkeypatch):
+    import server
+
+    calls = []
+
+    async def fake_fetch(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "ok",
+            "items": [
+                {
+                    "session_id": "sess-a",
+                    "round_id": 3,
+                    "payload": {"query_preview": "蓝色", "injected_bucket_ids": ["b1"]},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+    monkeypatch.setattr(server, "_fetch_gateway_injection_debug", fake_fetch)
+
+    response = await server.api_gateway_injections(
+        DummyRequest(
+            query_params={
+                "session_id": "sess-a",
+                "limit": "5",
+                "include_context": "1",
+            }
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["items"][0]["session_id"] == "sess-a"
+    assert calls == [{"session_id": "sess-a", "limit": 5, "include_context": True}]
+
+
+@pytest.mark.asyncio
 async def test_trace_rejects_favorite_without_reason(monkeypatch, bucket_mgr, decay_eng):
     import server
 

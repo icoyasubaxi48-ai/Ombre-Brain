@@ -188,6 +188,61 @@ async def _hot_update_gateway_config(gateway_body: dict) -> str | None:
         return f"gateway_hot_reload_failed:{type(exc).__name__}"
 
 
+def _gateway_debug_injections_url() -> str:
+    admin_url = os.environ.get("OMBRE_GATEWAY_ADMIN_URL", "").strip()
+    if not admin_url:
+        return ""
+    parsed = urlparse(admin_url)
+    path = parsed.path.rstrip("/")
+    if path.endswith("/api/config"):
+        path = path[: -len("/api/config")]
+    return parsed._replace(path=f"{path}/api/debug/injections", query="", fragment="").geturl()
+
+
+async def _fetch_gateway_injection_debug(
+    *,
+    session_id: str = "",
+    limit: int = 10,
+    include_context: bool = False,
+) -> dict:
+    debug_url = _gateway_debug_injections_url()
+    token = os.environ.get("OMBRE_GATEWAY_TOKEN", "").strip()
+    if not debug_url or not token:
+        return {"status": "error", "error": "gateway_debug_not_configured", "items": []}
+
+    params = {
+        "limit": max(1, min(100, int(limit))),
+        "include_context": "1" if include_context else "0",
+    }
+    if session_id:
+        params["session_id"] = session_id
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(
+                debug_url,
+                headers={"Authorization": f"Bearer {token}"},
+                params=params,
+            )
+        if response.status_code >= 400:
+            return {
+                "status": "error",
+                "error": "gateway_debug_failed",
+                "status_code": response.status_code,
+                "items": [],
+            }
+        payload = response.json()
+    except Exception as exc:
+        logger.warning("Gateway injection debug fetch failed: %s", exc)
+        return {
+            "status": "error",
+            "error": f"gateway_debug_failed:{type(exc).__name__}",
+            "items": [],
+        }
+    if not isinstance(payload, dict):
+        return {"status": "error", "error": "gateway_debug_invalid_payload", "items": []}
+    return {"status": "ok", "items": payload.get("items", []) if isinstance(payload.get("items"), list) else []}
+
+
 DEFAULT_CHATGPT_OAUTH_REDIRECT_PREFIX = "https://chatgpt.com/connector/oauth/"
 DEFAULT_CLAUDE_OAUTH_REDIRECT_URI = "https://claude.ai/api/mcp/auth_callback"
 
@@ -5745,6 +5800,30 @@ async def api_recall_debug(request):
     if payload.get("status") == "error":
         return JSONResponse(payload, status_code=400)
     return JSONResponse(payload)
+
+
+@mcp.custom_route("/api/gateway-injections", methods=["GET"])
+async def api_gateway_injections(request):
+    """Dashboard-authenticated proxy for recent Gateway injection debug records."""
+    from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
+
+    session_id = str(request.query_params.get("session_id", "") or "").strip()
+    limit = _int_between(request.query_params.get("limit"), 10, 1, 100)
+    include_context = str(request.query_params.get("include_context", "0")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    payload = await _fetch_gateway_injection_debug(
+        session_id=session_id,
+        limit=limit,
+        include_context=include_context,
+    )
+    status_code = 200 if payload.get("status") == "ok" else 502
+    return JSONResponse(payload, status_code=status_code)
 
 
 @mcp.custom_route("/api/reflection/run", methods=["POST"])

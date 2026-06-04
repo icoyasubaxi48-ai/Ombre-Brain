@@ -67,6 +67,18 @@ def test_dashboard_breath_debug_loads_recall_moment_candidates():
     assert "Moment 命中" in html
 
 
+def test_dashboard_breath_view_loads_gateway_injection_debug():
+    html = Path("dashboard.html").read_text(encoding="utf-8")
+
+    assert 'id="gateway-injections-panel"' in html
+    assert 'id="gateway-session-filter"' in html
+    assert "loadGatewayInjections()" in html
+    assert "BASE + '/api/gateway-injections?limit=10" in html
+    assert "function renderGatewayInjections(data)" in html
+    assert "function renderGatewayInjectionItem(item)" in html
+    assert "Gateway 最近注入" in html
+
+
 def test_dashboard_exposes_gateway_memory_cooldown_settings():
     html = Path("dashboard.html").read_text(encoding="utf-8")
 
