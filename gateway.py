@@ -272,6 +272,9 @@ class GatewayService:
                 "upstream_models": self.upstream_models,
                 "cooldown_hours": self.cooldown_hours,
                 "skip_recent_rounds": self.skip_recent_rounds,
+                "recent_context_cooldown_hours": self.recent_context_cooldown_hours,
+                "recent_context_reentry_idle_hours": self.recent_context_reentry_idle_hours,
+                "recent_context_budget": self.recent_budget,
                 "direct_render_mode": self.direct_render_mode,
                 "retrieval_mode": self.retrieval_mode,
                 "reranker": {
@@ -308,6 +311,9 @@ class GatewayService:
         return {
             "cooldown_hours": self.cooldown_hours,
             "skip_recent_rounds": self.skip_recent_rounds,
+            "recent_context_cooldown_hours": self.recent_context_cooldown_hours,
+            "recent_context_reentry_idle_hours": self.recent_context_reentry_idle_hours,
+            "recent_context_budget": self.recent_budget,
             "direct_render_mode": self.direct_render_mode,
             "retrieval_mode": self.retrieval_mode,
         }
@@ -338,6 +344,21 @@ class GatewayService:
             self.skip_recent_rounds = max(0, int(payload["skip_recent_rounds"]))
             self.gateway_cfg["skip_recent_rounds"] = self.skip_recent_rounds
             updated.append("gateway.skip_recent_rounds")
+        if "recent_context_cooldown_hours" in payload:
+            self.recent_context_cooldown_hours = max(0.0, float(payload["recent_context_cooldown_hours"]))
+            self.gateway_cfg["recent_context_cooldown_hours"] = self.recent_context_cooldown_hours
+            updated.append("gateway.recent_context_cooldown_hours")
+        if "recent_context_reentry_idle_hours" in payload:
+            self.recent_context_reentry_idle_hours = max(
+                0.0,
+                float(payload["recent_context_reentry_idle_hours"]),
+            )
+            self.gateway_cfg["recent_context_reentry_idle_hours"] = self.recent_context_reentry_idle_hours
+            updated.append("gateway.recent_context_reentry_idle_hours")
+        if "recent_context_budget" in payload:
+            self.recent_budget = max(0, int(payload["recent_context_budget"]))
+            self.gateway_cfg["recent_context_budget"] = self.recent_budget
+            updated.append("gateway.recent_context_budget")
         if "direct_render_mode" in payload:
             self.direct_render_mode = self._normalize_direct_render_mode(payload["direct_render_mode"])
             self.gateway_cfg["direct_render_mode"] = self.direct_render_mode

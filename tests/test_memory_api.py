@@ -1800,6 +1800,9 @@ async def test_config_get_reports_gateway_recall_modes(monkeypatch):
                 **server.config.get("gateway", {}),
                 "cooldown_hours": 2.5,
                 "skip_recent_rounds": 3,
+                "recent_context_cooldown_hours": 4.5,
+                "recent_context_reentry_idle_hours": 24,
+                "recent_context_budget": 240,
                 "direct_render_mode": "full",
                 "retrieval_mode": "bucket",
             },
@@ -1811,6 +1814,9 @@ async def test_config_get_reports_gateway_recall_modes(monkeypatch):
 
     assert payload["gateway"]["cooldown_hours"] == 2.5
     assert payload["gateway"]["skip_recent_rounds"] == 3
+    assert payload["gateway"]["recent_context_cooldown_hours"] == 4.5
+    assert payload["gateway"]["recent_context_reentry_idle_hours"] == 24
+    assert payload["gateway"]["recent_context_budget"] == 240
     assert payload["gateway"]["direct_render_mode"] == "full"
     assert payload["gateway"]["retrieval_mode"] == "bucket"
 
@@ -1865,14 +1871,18 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     runtime_path.parent.mkdir(exist_ok=True)
     config_path.write_text(
         "dream:\n  model: yaml-old\n"
-        "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n  direct_render_mode: auto\n  retrieval_mode: graph\n"
+        "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n"
+        "  recent_context_cooldown_hours: 8\n  recent_context_reentry_idle_hours: 24\n"
+        "  recent_context_budget: 300\n  direct_render_mode: auto\n  retrieval_mode: graph\n"
         "memory_diffusion:\n  chain_walk_enabled: false\n  max_hops: 2\n"
         "reflection:\n  memory_affect_anchor_enabled: true\n",
         encoding="utf-8",
     )
     runtime_path.write_text(
         "dream:\n  model: runtime-old\n"
-        "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n  direct_render_mode: auto\n  retrieval_mode: graph\n"
+        "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n"
+        "  recent_context_cooldown_hours: 8\n  recent_context_reentry_idle_hours: 24\n"
+        "  recent_context_budget: 300\n  direct_render_mode: auto\n  retrieval_mode: graph\n"
         "memory_diffusion:\n  chain_walk_enabled: false\n  max_hops: 2\n"
         "reflection:\n  daily_enabled: false\n  memory_affect_anchor_enabled: true\n",
         encoding="utf-8",
@@ -1891,6 +1901,9 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             **test_config["gateway"],
             "cooldown_hours": 48,
             "skip_recent_rounds": 9,
+            "recent_context_cooldown_hours": 8,
+            "recent_context_reentry_idle_hours": 24,
+            "recent_context_budget": 300,
             "direct_render_mode": "auto",
             "retrieval_mode": "graph",
         },
@@ -1936,6 +1949,9 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
                 "gateway": {
                     "cooldown_hours": 6,
                     "skip_recent_rounds": 5,
+                    "recent_context_cooldown_hours": 4,
+                    "recent_context_reentry_idle_hours": 24,
+                    "recent_context_budget": 260,
                     "direct_render_mode": "full",
                     "retrieval_mode": "bucket",
                 },
@@ -1967,12 +1983,18 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert runtime_config["dream"]["auto_enabled"] is False
     assert runtime_config["gateway"]["cooldown_hours"] == 6
     assert runtime_config["gateway"]["skip_recent_rounds"] == 5
+    assert runtime_config["gateway"]["recent_context_cooldown_hours"] == 4
+    assert runtime_config["gateway"]["recent_context_reentry_idle_hours"] == 24
+    assert runtime_config["gateway"]["recent_context_budget"] == 260
     assert runtime_config["gateway"]["direct_render_mode"] == "full"
     assert runtime_config["gateway"]["retrieval_mode"] == "bucket"
     assert hot_update_calls[-1] == {
         "gateway": {
             "cooldown_hours": 6,
             "skip_recent_rounds": 5,
+            "recent_context_cooldown_hours": 4,
+            "recent_context_reentry_idle_hours": 24,
+            "recent_context_budget": 260,
             "direct_render_mode": "full",
             "retrieval_mode": "bucket",
         },

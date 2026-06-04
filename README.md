@@ -178,6 +178,9 @@ cp config.example.yaml /srv/ombre-brain/config.yaml
 - `gateway.default_session_id`：少数兼容路由没传 `X-Ombre-Session-Id` 时的默认房间名，通用部署不要照抄旧示例名。
 - `gateway.cooldown_hours`：动态记忆再次出现的冷却小时，默认 `6`。
 - `gateway.skip_recent_rounds`：最近几轮里已经注入过的记忆优先避开，默认 `5`。
+- `gateway.recent_context_cooldown_hours`：`Recent Context` 自动注入后的冷却小时，默认 `6`。
+- `gateway.recent_context_reentry_idle_hours`：闲置多久算长时间再进入，默认 `24`；设 `0` 可关闭再进入触发。
+- `gateway.recent_context_budget`：`Recent Context` 预算，默认 `300`；设 `0` 可关闭这块自动注入。
 - `embedding.model/base_url`：embedding 模型和地址；key 推荐放 `.env` 的 `OMBRE_EMBEDDING_API_KEY`。
 - `write_path.semantic_search_timeout_seconds`：写入时找“只读相关旧记忆”的语义检索最多等待几秒，默认 `3`。网络慢时会跳过语义部分，不影响写入成功。
 - `dream.*`：夜梦后台配置；不写也有默认值，想自定义概率、时间、人格锚点时再改。
@@ -494,11 +497,12 @@ gateway:
 
 `skip_recent_rounds` 是最近几轮避开刚注入过的 bucket；`cooldown_hours` 是冷却曲线恢复到正常分数所需的小时数。Dashboard 的“配置 -> 记忆浮现”还可以改：
 
+- `recent_context_cooldown_hours`、`recent_context_reentry_idle_hours`、`recent_context_budget`：控制 `Recent Context` 什么时候自动出现、冷却多久、最多占多少预算。
 - `direct_render_mode`：`auto | compact | full`，控制可靠直命中是原文、窗口还是脱水胶囊。
 - `retrieval_mode`：`graph | bucket`，默认 `graph`；`bucket` 只作为接近 main 旧桶召回的对照档。
 - `memory_diffusion`：图扩散开关、返回条数、最小激活、链式扩散、链路深度/置信/前沿。
 
-如果设置了 `OMBRE_GATEWAY_ADMIN_URL`，这些参数保存后会同时热更新 `breath()` 和 Gateway；如果没有设置，Gateway 需要重启后才读取 yaml/runtime config。
+如果设置了 `OMBRE_GATEWAY_ADMIN_URL`，共享召回参数保存后会同时热更新 `breath()` 和 Gateway；Recent Context 这类 Gateway 专属参数会热更新 Gateway。如果没有设置，Gateway 需要重启后才读取 yaml/runtime config。
 
 ### Night Dream
 

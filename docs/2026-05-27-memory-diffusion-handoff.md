@@ -979,6 +979,7 @@ df0a41d Expose recall modes in dashboard config
 当前 Dashboard 的“配置 -> 记忆浮现”可以直接调：
 
 - Gateway 冷却：`cooldown_hours`、`skip_recent_rounds`
+- Recent Context：`recent_context_cooldown_hours`、`recent_context_reentry_idle_hours`、`recent_context_budget`
 - 直命中展示：`direct_render_mode=auto|compact|full`
 - 召回对照档：`retrieval_mode=graph|bucket`
 - 图扩散：`memory_diffusion.enabled/top_k/min_activation`
@@ -988,7 +989,7 @@ df0a41d Expose recall modes in dashboard config
 
 1. 更新 `ombre-brain` 当前进程里的 `config`。
 2. `persist=true` 时写入 `config.yaml`，如果只读则同步到 `config.runtime.yaml`。
-3. 如果配置了 `OMBRE_GATEWAY_ADMIN_URL`，把 `gateway` 和 `memory_diffusion` payload 一起 POST 到 `ombre-gateway /api/config`，让 Gateway 不重启就重算 `direct_render_mode/retrieval_mode/diffusion_options`。
+3. 如果配置了 `OMBRE_GATEWAY_ADMIN_URL`，把 `gateway` 和 `memory_diffusion` payload 一起 POST 到 `ombre-gateway /api/config`，让 Gateway 不重启就重算 `direct_render_mode/retrieval_mode/diffusion_options`，也立即更新 Recent Context 冷却、再进入阈值和预算。
 
 已验证：
 
@@ -1009,3 +1010,13 @@ recall:
 ```
 
 更推荐的旧记忆抽卡入口仍是 `resurface(max_results=..., include_archive=...)`。
+
+## 2026-06-04 追加：Dashboard 可调 Recent Context 阀门
+
+`Recent Context` 的三个 Gateway 参数已接入 Dashboard 配置页和 `/api/config` 热更新：
+
+- `recent_context_cooldown_hours`：最近上下文自动注入后的冷却，默认 `6`。
+- `recent_context_reentry_idle_hours`：闲置多久算长时间再进入，默认 `24`；设 `0` 关闭再进入触发。
+- `recent_context_budget`：最近上下文预算，默认 `300`；设 `0` 关闭这块自动注入。
+
+这组参数只控制 `Recent Context`，不会影响可靠直命中 `Recalled Memory` 和扩散 `Diffused Memory`。

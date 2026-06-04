@@ -349,6 +349,9 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
         test_config,
         cooldown_hours=6,
         skip_recent_rounds=5,
+        recent_context_cooldown_hours=6,
+        recent_context_reentry_idle_hours=24,
+        recent_context_budget=300,
         direct_render_mode="auto",
         retrieval_mode="graph",
     )
@@ -363,6 +366,9 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
                 "gateway": {
                     "cooldown_hours": 2.5,
                     "skip_recent_rounds": 3,
+                    "recent_context_cooldown_hours": 4.5,
+                    "recent_context_reentry_idle_hours": 24,
+                    "recent_context_budget": 240,
                     "direct_render_mode": "full",
                     "retrieval_mode": "bucket",
                 },
@@ -380,6 +386,9 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
     assert response.json()["updated"] == [
         "gateway.cooldown_hours",
         "gateway.skip_recent_rounds",
+        "gateway.recent_context_cooldown_hours",
+        "gateway.recent_context_reentry_idle_hours",
+        "gateway.recent_context_budget",
         "gateway.direct_render_mode",
         "gateway.retrieval_mode",
         "memory_diffusion.top_k",
@@ -390,6 +399,9 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
     ]
     assert service.cooldown_hours == pytest.approx(2.5)
     assert service.skip_recent_rounds == 3
+    assert service.recent_context_cooldown_hours == pytest.approx(4.5)
+    assert service.recent_context_reentry_idle_hours == pytest.approx(24)
+    assert service.recent_budget == 240
     assert service.direct_render_mode == "full"
     assert service.retrieval_mode == "bucket"
     assert service.diffusion_options.top_k == 3
@@ -399,6 +411,9 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
     assert service.diffusion_options.chain_min_confidence == pytest.approx(0.76)
     assert response.json()["gateway"]["direct_render_mode"] == "full"
     assert response.json()["gateway"]["retrieval_mode"] == "bucket"
+    assert response.json()["gateway"]["recent_context_cooldown_hours"] == pytest.approx(4.5)
+    assert response.json()["gateway"]["recent_context_reentry_idle_hours"] == pytest.approx(24)
+    assert response.json()["gateway"]["recent_context_budget"] == 240
     assert response.json()["memory_diffusion"]["chain_walk_enabled"] is True
 
 

@@ -1759,6 +1759,21 @@
       </div>
       <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认 5，就是最近 5 轮浮现过的记忆会优先避开</div>
       <div class="config-row">
+        <label>最近冷却</label>
+        <input type="number" id="cfg-recent-context-cooldown" min="0" max="168" step="0.5" />
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认 6，Recent Context 注入后多久不再自动重复注入</div>
+      <div class="config-row">
+        <label>再进入</label>
+        <input type="number" id="cfg-recent-context-reentry" min="0" max="168" step="0.5" />
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认 24，小于这个闲置时长不算长时间再进入；设 0 关闭再进入触发</div>
+      <div class="config-row">
+        <label>最近预算</label>
+        <input type="number" id="cfg-recent-context-budget" min="0" max="4000" />
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认 300；设 0 可关闭 Recent Context 自动注入</div>
+      <div class="config-row">
         <label>直命中形状</label>
         <select id="cfg-direct-render-mode">
           <option value="auto">auto</option>
@@ -3722,6 +3737,12 @@ async function loadConfig() {
     document.getElementById('cfg-dream-anchor').value = cfg.dream.identity_anchor_id || '';
     document.getElementById('cfg-gateway-cooldown').value = (cfg.gateway && cfg.gateway.cooldown_hours) ?? 6;
     document.getElementById('cfg-gateway-rounds').value = (cfg.gateway && cfg.gateway.skip_recent_rounds) ?? 5;
+    document.getElementById('cfg-recent-context-cooldown').value =
+      (cfg.gateway && cfg.gateway.recent_context_cooldown_hours) ?? 6;
+    document.getElementById('cfg-recent-context-reentry').value =
+      (cfg.gateway && cfg.gateway.recent_context_reentry_idle_hours) ?? 24;
+    document.getElementById('cfg-recent-context-budget').value =
+      (cfg.gateway && cfg.gateway.recent_context_budget) ?? 300;
     document.getElementById('cfg-direct-render-mode').value = (cfg.gateway && cfg.gateway.direct_render_mode) || 'auto';
     document.getElementById('cfg-retrieval-mode').value = (cfg.gateway && cfg.gateway.retrieval_mode) || 'graph';
     var diffusion = cfg.memory_diffusion || {};
@@ -3786,6 +3807,9 @@ async function saveConfig(persist) {
     gateway: {
       cooldown_hours: floatValue('cfg-gateway-cooldown', 6),
       skip_recent_rounds: numberValue('cfg-gateway-rounds', 5),
+      recent_context_cooldown_hours: floatValue('cfg-recent-context-cooldown', 6),
+      recent_context_reentry_idle_hours: floatValue('cfg-recent-context-reentry', 24),
+      recent_context_budget: numberValue('cfg-recent-context-budget', 300),
       direct_render_mode: document.getElementById('cfg-direct-render-mode').value,
       retrieval_mode: document.getElementById('cfg-retrieval-mode').value,
     },

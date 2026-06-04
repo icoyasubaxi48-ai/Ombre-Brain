@@ -6117,6 +6117,9 @@ async def api_config_get(request):
         "gateway": {
             "cooldown_hours": gateway_cfg.get("cooldown_hours", 6),
             "skip_recent_rounds": gateway_cfg.get("skip_recent_rounds", 5),
+            "recent_context_cooldown_hours": gateway_cfg.get("recent_context_cooldown_hours", 6),
+            "recent_context_reentry_idle_hours": gateway_cfg.get("recent_context_reentry_idle_hours", 24),
+            "recent_context_budget": gateway_cfg.get("recent_context_budget", 300),
             "direct_render_mode": _normalize_direct_render_mode(gateway_cfg.get("direct_render_mode", "auto")),
             "retrieval_mode": _normalize_retrieval_mode(gateway_cfg.get("retrieval_mode", "graph")),
         },
@@ -6302,6 +6305,23 @@ async def api_config_update(request):
             gateway_cfg["skip_recent_rounds"] = max(0, int(g["skip_recent_rounds"]))
             gateway_hot_update_body["skip_recent_rounds"] = gateway_cfg["skip_recent_rounds"]
             updated.append("gateway.skip_recent_rounds")
+        if "recent_context_cooldown_hours" in g:
+            gateway_cfg["recent_context_cooldown_hours"] = max(0.0, float(g["recent_context_cooldown_hours"]))
+            gateway_hot_update_body["recent_context_cooldown_hours"] = gateway_cfg["recent_context_cooldown_hours"]
+            updated.append("gateway.recent_context_cooldown_hours")
+        if "recent_context_reentry_idle_hours" in g:
+            gateway_cfg["recent_context_reentry_idle_hours"] = max(
+                0.0,
+                float(g["recent_context_reentry_idle_hours"]),
+            )
+            gateway_hot_update_body["recent_context_reentry_idle_hours"] = gateway_cfg[
+                "recent_context_reentry_idle_hours"
+            ]
+            updated.append("gateway.recent_context_reentry_idle_hours")
+        if "recent_context_budget" in g:
+            gateway_cfg["recent_context_budget"] = max(0, int(g["recent_context_budget"]))
+            gateway_hot_update_body["recent_context_budget"] = gateway_cfg["recent_context_budget"]
+            updated.append("gateway.recent_context_budget")
         if "direct_render_mode" in g:
             gateway_cfg["direct_render_mode"] = _normalize_direct_render_mode(g["direct_render_mode"])
             gateway_hot_update_body["direct_render_mode"] = gateway_cfg["direct_render_mode"]
@@ -6399,6 +6419,18 @@ async def api_config_update(request):
                     sc_gateway["cooldown_hours"] = max(0.0, float(body["gateway"]["cooldown_hours"]))
                 if "skip_recent_rounds" in body["gateway"]:
                     sc_gateway["skip_recent_rounds"] = max(0, int(body["gateway"]["skip_recent_rounds"]))
+                if "recent_context_cooldown_hours" in body["gateway"]:
+                    sc_gateway["recent_context_cooldown_hours"] = max(
+                        0.0,
+                        float(body["gateway"]["recent_context_cooldown_hours"]),
+                    )
+                if "recent_context_reentry_idle_hours" in body["gateway"]:
+                    sc_gateway["recent_context_reentry_idle_hours"] = max(
+                        0.0,
+                        float(body["gateway"]["recent_context_reentry_idle_hours"]),
+                    )
+                if "recent_context_budget" in body["gateway"]:
+                    sc_gateway["recent_context_budget"] = max(0, int(body["gateway"]["recent_context_budget"]))
                 if "direct_render_mode" in body["gateway"]:
                     sc_gateway["direct_render_mode"] = _normalize_direct_render_mode(body["gateway"]["direct_render_mode"])
                 if "retrieval_mode" in body["gateway"]:
