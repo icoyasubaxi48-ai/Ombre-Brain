@@ -6087,6 +6087,7 @@ async def api_config_get(request):
     dehy = config.get("dehydration", {})
     emb = config.get("embedding", {})
     gateway_cfg = config.get("gateway", {}) if isinstance(config.get("gateway", {}), dict) else {}
+    diffusion_options = diffusion_options_from_config(config)
     dream_cfg = config.get("dream", {}) if isinstance(config.get("dream", {}), dict) else {}
     reflection_cfg = config.get("reflection", {}) if isinstance(config.get("reflection", {}), dict) else {}
     return JSONResponse({
@@ -6108,6 +6109,19 @@ async def api_config_get(request):
         "gateway": {
             "cooldown_hours": gateway_cfg.get("cooldown_hours", 6),
             "skip_recent_rounds": gateway_cfg.get("skip_recent_rounds", 5),
+        },
+        "memory_diffusion": {
+            "enabled": diffusion_options.enabled,
+            "max_hops": diffusion_options.max_hops,
+            "top_k": diffusion_options.top_k,
+            "min_activation": diffusion_options.min_activation,
+            "max_paths_per_hit": diffusion_options.max_paths_per_hit,
+            "chain_walk_enabled": diffusion_options.chain_walk_enabled,
+            "chain_max_hops": diffusion_options.chain_max_hops,
+            "chain_min_strength": diffusion_options.chain_min_strength,
+            "chain_min_confidence": diffusion_options.chain_min_confidence,
+            "chain_min_relation_priority": diffusion_options.chain_min_relation_priority,
+            "chain_max_frontier": diffusion_options.chain_max_frontier,
         },
         "dream": {
             "enabled": dream_engine.enabled,
@@ -6167,6 +6181,39 @@ async def api_config_update(request):
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
 
     updated = []
+
+    def _memory_diffusion_dashboard_config(payload) -> dict:
+        if not isinstance(payload, dict):
+            return {}
+        sanitized = {}
+        if "enabled" in payload:
+            sanitized["enabled"] = _bool_value(payload.get("enabled"), True)
+        if "max_hops" in payload:
+            sanitized["max_hops"] = _int_between(payload.get("max_hops"), 2, 1, 8)
+        if "top_k" in payload:
+            sanitized["top_k"] = _int_between(payload.get("top_k"), 4, 0, 20)
+        if "min_activation" in payload:
+            sanitized["min_activation"] = _float_between(payload.get("min_activation"), 0.18, 0.0, 10.0)
+        if "max_paths_per_hit" in payload:
+            sanitized["max_paths_per_hit"] = _int_between(payload.get("max_paths_per_hit"), 3, 1, 10)
+        if "chain_walk_enabled" in payload:
+            sanitized["chain_walk_enabled"] = _bool_value(payload.get("chain_walk_enabled"), False)
+        if "chain_max_hops" in payload:
+            sanitized["chain_max_hops"] = _int_between(payload.get("chain_max_hops"), 6, 1, 12)
+        if "chain_min_strength" in payload:
+            sanitized["chain_min_strength"] = _float_between(payload.get("chain_min_strength"), 0.2, 0.0, 10.0)
+        if "chain_min_confidence" in payload:
+            sanitized["chain_min_confidence"] = _float_between(payload.get("chain_min_confidence"), 0.72, 0.0, 1.0)
+        if "chain_min_relation_priority" in payload:
+            sanitized["chain_min_relation_priority"] = _int_between(
+                payload.get("chain_min_relation_priority"),
+                60,
+                0,
+                100,
+            )
+        if "chain_max_frontier" in payload:
+            sanitized["chain_max_frontier"] = _int_between(payload.get("chain_max_frontier"), 24, 1, 200)
+        return sanitized
 
     # --- Dehydration config ---
     if "dehydration" in body:
@@ -6249,6 +6296,16 @@ async def api_config_update(request):
         if hot_update_status:
             updated.append(hot_update_status)
 
+    # --- Memory diffusion config ---
+    if "memory_diffusion" in body:
+        diffusion_payload = _memory_diffusion_dashboard_config(body["memory_diffusion"])
+        diffusion_cfg = config.setdefault("memory_diffusion", {})
+        for key, value in diffusion_payload.items():
+            diffusion_cfg[key] = value
+            updated.append(f"memory_diffusion.{key}")
+        if diffusion_payload:
+            updated.append("gateway_restart_required_for_memory_diffusion")
+
     # --- Reflection config ---
     if "reflection" in body:
         r = body["reflection"]
@@ -6321,6 +6378,11 @@ async def api_config_update(request):
                     sc_gateway["cooldown_hours"] = max(0.0, float(body["gateway"]["cooldown_hours"]))
                 if "skip_recent_rounds" in body["gateway"]:
                     sc_gateway["skip_recent_rounds"] = max(0, int(body["gateway"]["skip_recent_rounds"]))
+
+            if "memory_diffusion" in body:
+                sc_diffusion = save_config.setdefault("memory_diffusion", {})
+                for key, value in _memory_diffusion_dashboard_config(body["memory_diffusion"]).items():
+                    sc_diffusion[key] = value
 
             if "reflection" in body:
                 sc_reflection = save_config.setdefault("reflection", {})

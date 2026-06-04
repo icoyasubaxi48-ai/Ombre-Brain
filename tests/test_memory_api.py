@@ -1787,6 +1787,47 @@ async def test_config_get_reports_reflection_affect_anchor_switches(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_config_get_reports_memory_diffusion_settings(monkeypatch):
+    import server
+
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+    monkeypatch.setattr(
+        server,
+        "config",
+        {
+            **server.config,
+            "memory_diffusion": {
+                "enabled": True,
+                "max_hops": 2,
+                "top_k": 6,
+                "min_activation": 0.25,
+                "max_paths_per_hit": 4,
+                "chain_walk_enabled": True,
+                "chain_max_hops": 7,
+                "chain_min_strength": 0.3,
+                "chain_min_confidence": 0.8,
+                "chain_min_relation_priority": 62,
+                "chain_max_frontier": 31,
+            },
+        },
+    )
+
+    response = await server.api_config_get(DummyRequest())
+    payload = json.loads(response.body)
+
+    assert payload["memory_diffusion"]["enabled"] is True
+    assert payload["memory_diffusion"]["top_k"] == 6
+    assert payload["memory_diffusion"]["min_activation"] == 0.25
+    assert payload["memory_diffusion"]["max_paths_per_hit"] == 4
+    assert payload["memory_diffusion"]["chain_walk_enabled"] is True
+    assert payload["memory_diffusion"]["chain_max_hops"] == 7
+    assert payload["memory_diffusion"]["chain_min_strength"] == 0.3
+    assert payload["memory_diffusion"]["chain_min_confidence"] == 0.8
+    assert payload["memory_diffusion"]["chain_min_relation_priority"] == 62
+    assert payload["memory_diffusion"]["chain_max_frontier"] == 31
+
+
+@pytest.mark.asyncio
 async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_config, tmp_path):
     import server
 
@@ -1796,12 +1837,14 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     config_path.write_text(
         "dream:\n  model: yaml-old\n"
         "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n"
+        "memory_diffusion:\n  chain_walk_enabled: false\n  max_hops: 2\n"
         "reflection:\n  memory_affect_anchor_enabled: true\n",
         encoding="utf-8",
     )
     runtime_path.write_text(
         "dream:\n  model: runtime-old\n"
         "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n"
+        "memory_diffusion:\n  chain_walk_enabled: false\n  max_hops: 2\n"
         "reflection:\n  daily_enabled: false\n  memory_affect_anchor_enabled: true\n",
         encoding="utf-8",
     )
@@ -1819,6 +1862,16 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             **test_config["gateway"],
             "cooldown_hours": 48,
             "skip_recent_rounds": 9,
+        },
+        "memory_diffusion": {
+            "enabled": True,
+            "max_hops": 2,
+            "top_k": 4,
+            "min_activation": 0.18,
+            "chain_walk_enabled": False,
+            "chain_max_hops": 6,
+            "chain_min_confidence": 0.72,
+            "chain_max_frontier": 24,
         },
         "reflection": {
             "daily_enabled": False,
@@ -1847,6 +1900,15 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             {
                 "dream": {"auto_enabled": False, "model": "dream-new"},
                 "gateway": {"cooldown_hours": 6, "skip_recent_rounds": 5},
+                "memory_diffusion": {
+                    "enabled": True,
+                    "top_k": 3,
+                    "min_activation": 0.22,
+                    "chain_walk_enabled": True,
+                    "chain_max_hops": 8,
+                    "chain_min_confidence": 0.76,
+                    "chain_max_frontier": 36,
+                },
                 "reflection": {
                     "daily_enabled": True,
                     "memory_affect_anchor_enabled": False,
@@ -1866,6 +1928,16 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert runtime_config["dream"]["auto_enabled"] is False
     assert runtime_config["gateway"]["cooldown_hours"] == 6
     assert runtime_config["gateway"]["skip_recent_rounds"] == 5
+    assert runtime_config["memory_diffusion"]["enabled"] is True
+    assert runtime_config["memory_diffusion"]["top_k"] == 3
+    assert runtime_config["memory_diffusion"]["min_activation"] == 0.22
+    assert runtime_config["memory_diffusion"]["chain_walk_enabled"] is True
+    assert runtime_config["memory_diffusion"]["chain_max_hops"] == 8
+    assert runtime_config["memory_diffusion"]["chain_min_confidence"] == 0.76
+    assert runtime_config["memory_diffusion"]["chain_max_frontier"] == 36
+    assert runtime_config["memory_diffusion"]["max_hops"] == 2
+    assert "memory_diffusion.chain_walk_enabled" in payload["updated"]
+    assert "gateway_restart_required_for_memory_diffusion" in payload["updated"]
     assert runtime_config["reflection"]["daily_enabled"] is True
     assert runtime_config["reflection"]["memory_affect_anchor_enabled"] is False
     assert runtime_config["reflection"]["relationship_weather_affect_anchor_enabled"] is True

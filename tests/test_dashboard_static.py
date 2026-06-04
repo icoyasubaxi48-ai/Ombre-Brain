@@ -90,14 +90,31 @@ def test_dashboard_breath_view_loads_gateway_injection_debug():
 
 def test_dashboard_exposes_gateway_memory_cooldown_settings():
     html = Path("dashboard.html").read_text(encoding="utf-8")
+    load_block = html.split("async function loadConfig()", 1)[1].split("async function saveConfig", 1)[0]
+    save_block = html.split("async function saveConfig", 1)[1].split("var keyVal =", 1)[0]
 
     assert "<h3>记忆浮现</h3>" in html
     assert 'id="cfg-gateway-cooldown"' in html
     assert 'id="cfg-gateway-rounds"' in html
+    assert 'id="cfg-diffusion-enabled"' in html
+    assert 'id="cfg-diffusion-topk"' in html
+    assert 'id="cfg-diffusion-min"' in html
+    assert 'id="cfg-chain-walk"' in html
+    assert 'id="cfg-chain-hops"' in html
+    assert 'id="cfg-chain-confidence"' in html
+    assert 'id="cfg-chain-frontier"' in html
     assert "cfg.gateway.cooldown_hours" in html
     assert "cfg.gateway.skip_recent_rounds" in html
+    assert "cfg.memory_diffusion || {}" in load_block
+    assert "diffusion.chain_walk_enabled" in load_block
+    assert "diffusion.chain_min_confidence" in load_block
     assert "cooldown_hours: floatValue('cfg-gateway-cooldown', 6)" in html
     assert "skip_recent_rounds: numberValue('cfg-gateway-rounds', 5)" in html
+    assert "memory_diffusion: {" in save_block
+    assert "top_k: numberValue('cfg-diffusion-topk', 4)," in save_block
+    assert "min_activation: floatValue('cfg-diffusion-min', 0.18)," in save_block
+    assert "chain_walk_enabled: document.getElementById('cfg-chain-walk').value === 'true'," in save_block
+    assert "chain_min_confidence: floatValue('cfg-chain-confidence', 0.72)," in save_block
 
 
 def test_dashboard_exposes_reflection_affect_anchor_switches():
