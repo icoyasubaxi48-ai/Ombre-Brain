@@ -3512,7 +3512,12 @@ async def inspect_diffusion(
     }
 
 
-def _inspect_moment_payload(moment: dict, *, include_text: bool) -> dict:
+def _inspect_moment_payload(
+    moment: dict,
+    *,
+    include_text: bool,
+    include_source_window: bool = False,
+) -> dict:
     text = str(moment.get("text") or "")
     payload = {
         "moment_id": moment.get("moment_id"),
@@ -3533,6 +3538,14 @@ def _inspect_moment_payload(moment: dict, *, include_text: bool) -> dict:
         payload["text"] = text
     else:
         payload["text_preview"] = _clip_text(" ".join(text.split()), 240)
+    if include_source_window:
+        source_window = source_ref_window(
+            moment,
+            allowed_root=str(config.get("buckets_dir") or ""),
+            max_chars=760,
+        )
+        if source_window:
+            payload["source_window"] = source_window
     return payload
 
 
@@ -3561,7 +3574,11 @@ async def inspect_moments(bucket_id: str = "", limit: int = 20) -> dict:
             "edge_count": len(edges),
             "db_path": memory_moment_store.db_path,
             "moments": [
-                _inspect_moment_payload(moment, include_text=True)
+                _inspect_moment_payload(
+                    moment,
+                    include_text=True,
+                    include_source_window=True,
+                )
                 for moment in moments[:limit]
             ],
             "edges": edges[:limit],

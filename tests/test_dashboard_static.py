@@ -38,6 +38,9 @@ def test_dashboard_bucket_detail_loads_moment_diagnostics():
     assert "function renderMomentEdges(edges)" in html
     assert "function renderMomentEdge(edge)" in html
     assert "Moment Edges" in html
+    assert "moment-source-window" in html
+    assert "原文窗口" in html
+    assert "m.source_window" in html
     assert "runtime_gate" in html
     assert ".detail-moments" in html
     assert ".moment-edge-list" in html

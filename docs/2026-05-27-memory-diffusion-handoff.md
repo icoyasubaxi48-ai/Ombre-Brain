@@ -836,7 +836,7 @@ source_ref:
 仍未做：
 
 - 外部 transcript / raw chat source 的行号导入。
-- Dashboard 上展示 moment 对应原文窗口。
+- Dashboard 上展示 moment 对应原文窗口已在 2026-06-04 补上；Bucket 详情页 `Moments` 面板现在会显示 `source_window`。
 
 ### 4. Dashboard 观察面板
 
@@ -1040,3 +1040,11 @@ Gateway 的两块动态记忆预算已接入 Dashboard 配置页、Gateway `/api
 - `related_memory_budget`：`Diffused Memory` 扩散背景预算，默认 `220`；设 `0` 可以关闭 Gateway 扩散注入。
 
 这只改变 Gateway 注入预算，不改 direct admission、diffusion gate 或 `breath()` 的 MCP 参数。
+
+## 2026-06-04 追加：Bucket Moments 原文窗口
+
+Dashboard Bucket 详情页的 `Moments` 面板现在会在每个 moment 下方显示只读 `source_window`：
+
+- `/api/moments?bucket_id=...` 在 bucket 模式下给 moment payload 附带 `source_window`。
+- `source_window` 通过 `source_ref_window()` 从 `${buckets_dir}` 内读取，只显示 bucket 正文附近窗口，不回卷到 frontmatter，也不会读出 bucket 根目录外的文件。
+- 这只补观察面板，不改变 `breath()`、Gateway 注入、moment graph 或扩散规则。

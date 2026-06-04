@@ -456,6 +456,7 @@ async def test_api_moments_returns_bucket_layer_and_gate_debug(monkeypatch, buck
     moment_store = MemoryMomentStore(test_config)
     monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
     monkeypatch.setattr(server, "memory_moment_store", moment_store)
+    monkeypatch.setattr(server, "config", test_config)
     monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
 
     response = await server.api_moments(
@@ -470,6 +471,7 @@ async def test_api_moments_returns_bucket_layer_and_gate_debug(monkeypatch, buck
     assert payload["bucket_layer_debug"]["layer"] == "dynamic_memory"
     assert payload["count"] == 1
     assert payload["moments"][0]["text"] == "小雨喜欢蓝色，也希望这件事被记住。"
+    assert "小雨喜欢蓝色，也希望这件事被记住。" in payload["moments"][0]["source_window"]
     assert payload["moments"][0]["runtime_gate"]["direct_seed"]["allowed"] is True
     assert payload["moments"][0]["layer_debug"]["can_direct_seed"] is True
 

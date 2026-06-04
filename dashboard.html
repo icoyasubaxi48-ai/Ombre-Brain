@@ -509,6 +509,26 @@
     padding-top: 7px;
     border-top: 1px solid var(--border);
   }
+  .moment-source-window {
+    margin-top: 9px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border);
+  }
+  .moment-source-window-title {
+    color: var(--text-light);
+    font-size: 10px;
+    margin-bottom: 5px;
+  }
+  .moment-source-window pre {
+    margin: 0;
+    white-space: pre-wrap;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 1.65;
+    max-height: 220px;
+    overflow-y: auto;
+  }
   .moment-edge-list {
     margin-top: 12px;
   }
@@ -2494,6 +2514,9 @@ function renderMomentItem(moment, index) {
   if (layer.context_only) chips.push({ text: 'context-only', state: 'block' });
   var source = formatMomentSource(m.metadata && m.metadata.source_ref);
   var text = m.text || m.text_preview || '';
+  var sourceWindow = m.source_window
+    ? '<div class="moment-source-window"><div class="moment-source-window-title">原文窗口</div><pre>' + esc(m.source_window) + '</pre></div>'
+    : '';
   return '<div class="moment-item">' +
     '<div class="moment-head">' +
       '<div class="moment-title">#' + (index + 1) + ' ' + esc(m.moment_id || '') + '</div>' +
@@ -2501,6 +2524,7 @@ function renderMomentItem(moment, index) {
     '</div>' +
     renderMomentChips(chips) +
     '<div class="moment-body">' + esc(text) + '</div>' +
+    sourceWindow +
   '</div>';
 }
 
