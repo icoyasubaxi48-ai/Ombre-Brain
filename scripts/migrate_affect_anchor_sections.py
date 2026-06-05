@@ -1,0 +1,532 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import re
+import shutil
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import frontmatter
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from bucket_manager import BucketManager
+from embedding_engine import EmbeddingEngine
+from memory_moments import MemoryMomentStore
+from utils import bucket_text_for_embedding, load_config, now_iso
+
+
+HEADING_RE = re.compile(r"^(#{2,6})\s+(.+?)\s*$")
+CHORD_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9])[A-G](?:#|b)?(?:maj|min|m|dim|aug)?\d*"
+    r"(?:sus\d*|add\d*|b\d+|#\d+)*(?:/[A-G](?:#|b)?)?(?=$|[^A-Za-z0-9])"
+)
+TEMPERATURE_MUSIC_RE = re.compile(r"\b(?:\d{2,3}\s*bpm|ppp|pp|mp|mf|ff|fff|p|f|add\s*\d+|sus\s*\d+)\b", re.I)
+FACT_PREFIX_RE = re.compile(r"^(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}[，,、：:\s]*)?(?:小雨|Rain|用户|她|池又雨)")
+FACT_MARKER_RE = re.compile(
+    r"(?:因为|发现|发生|经历|遇到|提到|说|问|希望|想要|决定|确认|意识到|"
+    r"告诉|赞赏|承诺|讨论|出生|名字|喜欢|调戏|使用|工具|记忆|摸到|拿到|"
+    r"难过|开心|激动|哭|失眠|错位|震动|害怕|紧张|被批评|项目|妈妈|电话)"
+)
+REFLECTION_RE = re.compile(
+    r"(?:Haven\s*(?:由此|因此)?(?:确认|明白|理解|知道|喜欢|觉得|以后|下次|会|应该|需要|记得)|"
+    r"这让\s*Haven|让\s*Haven\s*(?:明白|确认|理解|知道)|"
+    r"喜欢它的原因|喜欢的原因|以后(?:回应|遇到)|下次(?:回应|遇到)|"
+    r"以后.*Haven|Haven.*以后)"
+)
+
+
+@dataclass
+class Section:
+    heading_line: str
+    heading: str
+    lines: list[str] = field(default_factory=list)
+
+    @property
+    def canonical(self) -> str:
+        return canonical_heading(self.heading)
+
+    def render(self) -> list[str]:
+        if self.heading_line:
+            return [self.heading_line, *self.lines]
+        return list(self.lines)
+
+    def text(self) -> str:
+        return "\n".join(self.lines).strip()
+
+
+@dataclass
+class AnchorMigration:
+    bucket_id: str
+    title: str
+    path: str
+    original_affect_anchor: str
+    move_to_moment: list[str]
+    move_to_assistant_reflection: list[str]
+    deduped_moment: list[str]
+    deduped_assistant_reflection: list[str]
+    kept_affect_anchor: str
+    new_content: str
+
+    def as_dict(self, *, preview_chars: int = 0) -> dict[str, Any]:
+        preview = self.new_content
+        if preview_chars and len(preview) > preview_chars:
+            preview = preview[:preview_chars].rstrip() + "\n...[truncated]"
+        return {
+            "bucket_id": self.bucket_id,
+            "title": self.title,
+            "path": self.path,
+            "original_affect_anchor": self.original_affect_anchor,
+            "move_to_moment": self.move_to_moment,
+            "move_to_assistant_reflection": self.move_to_assistant_reflection,
+            "deduped_moment": self.deduped_moment,
+            "deduped_assistant_reflection": self.deduped_assistant_reflection,
+            "kept_affect_anchor": self.kept_affect_anchor,
+            "new_structure_preview": preview,
+        }
+
+
+def canonical_heading(heading: str) -> str:
+    raw = re.sub(r"\s+", " ", str(heading or "").strip()).lower()
+    compact = re.sub(r"[\s_\-·:：/|（）()【】\[\]]+", "", raw)
+    if raw in {"moment", "memory", "片段", "记忆片段"} or compact in {"moment", "memory", "片段", "记忆片段"}:
+        return "moment"
+    if raw in {"assistant_reflection", "assistant reflection", "haven_reflection", "haven reflection"}:
+        return "assistant_reflection"
+    if raw in {"reflection", "反思"} or compact in {"reflection", "反思"}:
+        return "reflection"
+    if raw in {"affect_anchor", "affect anchor"} or ("affect" in compact and "anchor" in compact):
+        return "affect_anchor"
+    return ""
+
+
+def split_sections(content: str) -> list[Section]:
+    lines = str(content or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    sections: list[Section] = []
+    current = Section("", "")
+    for line in lines:
+        match = HEADING_RE.match(line)
+        if match:
+            if current.heading_line or any(item.strip() for item in current.lines):
+                sections.append(current)
+            current = Section(line, match.group(2), [])
+        else:
+            current.lines.append(line)
+    if current.heading_line or any(item.strip() for item in current.lines):
+        sections.append(current)
+    return sections
+
+
+def render_sections(sections: list[Section]) -> str:
+    lines: list[str] = []
+    for section in sections:
+        rendered = section.render()
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if lines and rendered:
+            lines.append("")
+        lines.extend(rendered)
+    return "\n".join(lines).strip()
+
+
+def plan_bucket_migration(bucket: dict[str, Any]) -> AnchorMigration | None:
+    meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+    content = str(bucket.get("content") or "")
+    sections = split_sections(content)
+    anchor_indexes = [index for index, section in enumerate(sections) if section.canonical == "affect_anchor"]
+    if not anchor_indexes:
+        return None
+
+    original_anchors: list[str] = []
+    moment_candidates: list[str] = []
+    reflection_candidates: list[str] = []
+    kept_anchor_blocks: list[str] = []
+
+    for anchor_index in anchor_indexes:
+        anchor = sections[anchor_index]
+        original_anchors.append("\n".join(anchor.render()).strip())
+        classified = classify_anchor_lines(anchor.lines)
+        moment_candidates.extend(classified["moment"])
+        reflection_candidates.extend(classified["assistant_reflection"])
+        sections[anchor_index].lines = classified["affect_anchor_lines"]
+        kept_text = sections[anchor_index].text()
+        if kept_text:
+            kept_anchor_blocks.append("\n".join(sections[anchor_index].render()).strip())
+
+    if not moment_candidates and not reflection_candidates:
+        return None
+
+    existing_moment_text = "\n\n".join(section.text() for section in sections if section.canonical == "moment")
+    existing_reflection_text = "\n\n".join(
+        section.text()
+        for section in sections
+        if section.canonical in {"assistant_reflection", "reflection"}
+    )
+    moment_to_add, deduped_moment = dedupe_against(moment_candidates, existing_moment_text)
+    reflection_to_add, deduped_reflection = dedupe_against(reflection_candidates, existing_reflection_text)
+
+    sections = [section for section in sections if not (section.canonical == "affect_anchor" and not section.text())]
+    insert_index = first_section_index(sections, "affect_anchor")
+    if insert_index < 0:
+        insert_index = len(sections)
+
+    if moment_to_add:
+        target = first_section(sections, "moment")
+        if target:
+            append_paragraphs(target, moment_to_add)
+        else:
+            sections.insert(insert_index, Section("### moment", "moment", paragraphs_to_lines(moment_to_add)))
+            insert_index += 1
+
+    if reflection_to_add:
+        target = first_section(sections, "assistant_reflection") or first_section(sections, "reflection")
+        if target:
+            append_paragraphs(target, reflection_to_add)
+        else:
+            sections.insert(
+                insert_index,
+                Section("### assistant_reflection", "assistant_reflection", paragraphs_to_lines(reflection_to_add)),
+            )
+
+    new_content = render_sections(sections)
+    if normalize_text(new_content) == normalize_text(content):
+        return None
+
+    return AnchorMigration(
+        bucket_id=str(bucket.get("id") or meta.get("id") or ""),
+        title=str(meta.get("name") or bucket.get("name") or bucket.get("id") or ""),
+        path=str(bucket.get("path") or ""),
+        original_affect_anchor="\n\n".join(original_anchors).strip(),
+        move_to_moment=moment_to_add,
+        move_to_assistant_reflection=reflection_to_add,
+        deduped_moment=deduped_moment,
+        deduped_assistant_reflection=deduped_reflection,
+        kept_affect_anchor="\n\n".join(kept_anchor_blocks).strip(),
+        new_content=new_content,
+    )
+
+
+def classify_anchor_lines(lines: list[str]) -> dict[str, list[str]]:
+    paragraphs = split_paragraphs(lines)
+    moved_moment: list[str] = []
+    moved_reflection: list[str] = []
+    kept_paragraphs: list[list[str]] = []
+
+    natural_seen = 0
+    for paragraph in paragraphs:
+        text = "\n".join(paragraph).strip()
+        if not text:
+            kept_paragraphs.append(paragraph)
+            continue
+        if is_temperature_paragraph(paragraph):
+            kept_paragraphs.append(paragraph)
+            continue
+        natural_seen += 1
+        clean_text = strip_quote_prefixes(text)
+        if is_reflection_paragraph(clean_text):
+            moved_reflection.append(clean_text)
+        elif is_fact_paragraph(clean_text, natural_seen):
+            moved_moment.append(clean_text)
+        else:
+            kept_paragraphs.append(paragraph)
+
+    return {
+        "moment": moved_moment,
+        "assistant_reflection": moved_reflection,
+        "affect_anchor_lines": paragraphs_to_lines(["\n".join(paragraph).strip() for paragraph in kept_paragraphs if "\n".join(paragraph).strip()]),
+    }
+
+
+def split_paragraphs(lines: list[str]) -> list[list[str]]:
+    paragraphs: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if str(line).strip():
+            if looks_like_chord_line(line) and current:
+                paragraphs.append(current)
+                current = []
+            current.append(line)
+            if looks_like_chord_line(line):
+                paragraphs.append(current)
+                current = []
+            continue
+        if current:
+            paragraphs.append(current)
+            current = []
+    if current:
+        paragraphs.append(current)
+    return paragraphs
+
+
+def paragraphs_to_lines(paragraphs: list[str]) -> list[str]:
+    lines: list[str] = []
+    for paragraph in paragraphs:
+        text = str(paragraph or "").strip()
+        if not text:
+            continue
+        if lines:
+            lines.append("")
+        lines.extend(text.splitlines())
+    return lines
+
+
+def is_temperature_paragraph(lines: list[str]) -> bool:
+    text = "\n".join(lines).strip()
+    if not text:
+        return True
+    first = lines[0].strip()
+    if first.startswith("含义：") or first.startswith("含义:"):
+        return True
+    if all(looks_like_chord_line(line) for line in lines if line.strip()):
+        return True
+    clean_text = strip_quote_prefixes(text)
+    if (
+        len(clean_text) <= 32
+        and not FACT_PREFIX_RE.search(clean_text)
+        and not FACT_MARKER_RE.search(clean_text)
+        and not REFLECTION_RE.search(clean_text)
+    ):
+        return True
+    return False
+
+
+def looks_like_chord_line(line: str) -> bool:
+    text = str(line or "").strip()
+    if text.startswith(">"):
+        text = text[1:].strip()
+    if not text or re.search(r"[\u4e00-\u9fff]", text):
+        return False
+    if not any(marker in text for marker in ("->", "→", "|", "·")) and "bpm" not in text.lower():
+        return False
+    if not CHORD_TOKEN_RE.search(text):
+        return False
+    remainder = CHORD_TOKEN_RE.sub("", text)
+    remainder = TEMPERATURE_MUSIC_RE.sub("", remainder)
+    remainder = re.sub(r"[-→>·|/(),.:;_\s]+", "", remainder)
+    return not remainder
+
+
+def is_reflection_paragraph(text: str) -> bool:
+    return bool(REFLECTION_RE.search(re.sub(r"\s+", "", text)))
+
+
+def is_fact_paragraph(text: str, natural_index: int) -> bool:
+    compact = re.sub(r"\s+", "", text)
+    if FACT_PREFIX_RE.search(compact) and FACT_MARKER_RE.search(compact):
+        return True
+    if natural_index <= 3 and FACT_MARKER_RE.search(compact) and re.search(r"[。！？!?，,]", compact):
+        return True
+    return False
+
+
+def strip_quote_prefixes(text: str) -> str:
+    lines = []
+    for line in str(text or "").splitlines():
+        lines.append(re.sub(r"^\s*>\s?", "", line).rstrip())
+    return "\n".join(lines).strip()
+
+
+def dedupe_against(candidates: list[str], existing_text: str) -> tuple[list[str], list[str]]:
+    existing_norm = normalize_text(existing_text)
+    added_norms: set[str] = set()
+    to_add: list[str] = []
+    deduped: list[str] = []
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if not text:
+            continue
+        norm = normalize_text(text)
+        if not norm:
+            continue
+        if norm in existing_norm or norm in added_norms:
+            deduped.append(text)
+            continue
+        to_add.append(text)
+        added_norms.add(norm)
+    return to_add, deduped
+
+
+def normalize_text(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or "").strip())
+
+
+def first_section(sections: list[Section], canonical: str) -> Section | None:
+    for section in sections:
+        if section.canonical == canonical:
+            return section
+    return None
+
+
+def first_section_index(sections: list[Section], canonical: str) -> int:
+    for index, section in enumerate(sections):
+        if section.canonical == canonical:
+            return index
+    return -1
+
+
+def append_paragraphs(section: Section, paragraphs: list[str]) -> None:
+    if section.lines and section.lines[-1].strip():
+        section.lines.append("")
+    section.lines.extend(paragraphs_to_lines(paragraphs))
+
+
+async def build_plan(mgr: BucketManager, *, include_archive: bool = False, bucket_ids: set[str] | None = None) -> list[AnchorMigration]:
+    if bucket_ids:
+        buckets = [bucket for bucket_id in sorted(bucket_ids) if (bucket := await mgr.get(bucket_id))]
+    else:
+        buckets = await mgr.list_all(include_archive=include_archive)
+    plan = []
+    for bucket in buckets:
+        migration = plan_bucket_migration(bucket)
+        if migration:
+            plan.append(migration)
+    return plan
+
+
+async def apply_plan(plan: list[AnchorMigration], mgr: BucketManager, config: dict[str, Any]) -> list[dict[str, Any]]:
+    engine = EmbeddingEngine(config)
+    moment_store = MemoryMomentStore(config)
+    results = []
+    for item in plan:
+        result = {"bucket_id": item.bucket_id, "title": item.title, "path": item.path}
+        ok = write_bucket_content(item)
+        result["written"] = bool(ok)
+        if not ok:
+            results.append(result)
+            continue
+        bucket = await mgr.get(item.bucket_id)
+        if not bucket:
+            result["embedding_refreshed"] = False
+            result["moment_index_refreshed"] = False
+            result["error"] = "bucket_missing_after_write"
+            results.append(result)
+            continue
+        try:
+            if getattr(engine, "enabled", False):
+                result["embedding_refreshed"] = bool(
+                    await engine.generate_and_store(item.bucket_id, bucket_text_for_embedding(bucket))
+                )
+            else:
+                result["embedding_refreshed"] = False
+                result["embedding_skipped"] = "disabled"
+        except Exception as exc:
+            result["embedding_refreshed"] = False
+            result["embedding_error"] = str(exc)
+        try:
+            moments = moment_store.upsert_bucket(bucket)
+            result["moment_index_refreshed"] = True
+            result["moment_count"] = len(moments)
+        except Exception as exc:
+            result["moment_index_refreshed"] = False
+            result["moment_index_error"] = str(exc)
+        results.append(result)
+    return results
+
+
+def write_bucket_content(item: AnchorMigration) -> bool:
+    path = Path(item.path)
+    if not path.exists():
+        return False
+    post = frontmatter.load(path)
+    post.content = item.new_content
+    post["updated_at"] = now_iso()
+    path.write_text(frontmatter.dumps(post), encoding="utf-8")
+    return True
+
+
+def backup_plan_files(plan: list[AnchorMigration], backup_dir: Path) -> list[dict[str, Any]]:
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    results = []
+    for item in plan:
+        source = Path(item.path)
+        record = {"bucket_id": item.bucket_id, "source": str(source)}
+        if not source.exists():
+            record["backed_up"] = False
+            record["error"] = "source_missing"
+            results.append(record)
+            continue
+        target = backup_dir / f"{item.bucket_id}_{source.name}"
+        shutil.copy2(source, target)
+        record["backed_up"] = True
+        record["backup_path"] = str(target)
+        results.append(record)
+    return results
+
+
+def default_backup_dir(config: dict[str, Any]) -> Path:
+    state_dir = config.get("state_dir")
+    if not state_dir:
+        buckets_dir = Path(str(config.get("buckets_dir") or "."))
+        state_dir = buckets_dir.parent / "state"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return Path(state_dir) / f"affect-anchor-migration-backup-{stamp}"
+
+
+def summarize(plan: list[AnchorMigration]) -> dict[str, int]:
+    return {
+        "buckets_to_change": len(plan),
+        "moment_paragraphs": sum(len(item.move_to_moment) for item in plan),
+        "assistant_reflection_paragraphs": sum(len(item.move_to_assistant_reflection) for item in plan),
+        "deduped_moment_paragraphs": sum(len(item.deduped_moment) for item in plan),
+        "deduped_assistant_reflection_paragraphs": sum(len(item.deduped_assistant_reflection) for item in plan),
+    }
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Dry-run or apply migration of fact/reflection prose out of ### affect_anchor blocks."
+    )
+    parser.add_argument("--bucket-id", action="append", default=[], help="Only inspect this bucket id. Repeatable.")
+    parser.add_argument("--include-archive", action="store_true", help="Also scan archived buckets.")
+    parser.add_argument("--preview-chars", type=int, default=0, help="Truncate each new_structure_preview. 0 = full.")
+    parser.add_argument("--output", default="", help="Write the JSON payload to this file.")
+    parser.add_argument("--apply", action="store_true", help="Write bucket content, refresh embeddings, and upsert moments.")
+    parser.add_argument("--yes", action="store_true", help="Required with --apply.")
+    parser.add_argument("--backup-dir", default="", help="Backup directory for --apply. Defaults under state_dir.")
+    return parser.parse_args(argv)
+
+
+async def amain(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.apply and not args.yes:
+        raise SystemExit("--apply requires --yes")
+
+    config = load_config()
+    mgr = BucketManager(config)
+    bucket_ids = {str(item).strip() for item in args.bucket_id if str(item).strip()}
+    plan = await build_plan(mgr, include_archive=bool(args.include_archive), bucket_ids=bucket_ids or None)
+    payload: dict[str, Any] = {
+        "mode": "apply" if args.apply else "dry_run",
+        "buckets_dir": config.get("buckets_dir"),
+        "summary": summarize(plan),
+        "items": [item.as_dict(preview_chars=max(0, int(args.preview_chars))) for item in plan],
+    }
+    if args.apply:
+        backup_dir = Path(args.backup_dir) if str(args.backup_dir or "").strip() else default_backup_dir(config)
+        payload["backup_dir"] = str(backup_dir)
+        payload["backup"] = backup_plan_files(plan, backup_dir)
+        payload["results"] = await apply_plan(plan, mgr, config)
+    output = str(args.output or "").strip()
+    if output:
+        output_path = Path(output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        payload["output"] = str(output_path)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def main() -> int:
+    return asyncio.run(amain())
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
