@@ -1,0 +1,77 @@
+from pathlib import Path
+
+from word_map import WordMapStore
+
+
+def _config(tmp_path: Path, **word_map):
+    return {
+        "state_dir": str(tmp_path / "state"),
+        "buckets_dir": str(tmp_path / "buckets"),
+        "word_map": {
+            "enabled": True,
+            "max_terms_per_bucket": 8,
+            "edge_top_k": 6,
+            **word_map,
+        },
+    }
+
+
+def _bucket(bucket_id: str, content: str, **metadata):
+    return {
+        "id": bucket_id,
+        "content": content,
+        "metadata": {
+            "id": bucket_id,
+            "name": metadata.pop("name", bucket_id),
+            "tags": metadata.pop("tags", []),
+            "domain": metadata.pop("domain", []),
+            "keywords": metadata.pop("keywords", []),
+            **metadata,
+        },
+    }
+
+
+def test_word_map_rebuild_creates_nodes_edges_and_bucket_evidence(tmp_path):
+    store = WordMapStore(_config(tmp_path))
+    stats = store.rebuild(
+        [
+            _bucket(
+                "a",
+                "夏天很热，所以小雨开了空调。",
+                name="夏天空调",
+                keywords=["夏天", "空调"],
+                domain=["生活"],
+            ),
+            _bucket(
+                "b",
+                "夏天也会想到冰美式。",
+                name="夏天咖啡",
+                keywords=["夏天", "冰美式"],
+                domain=["生活"],
+            ),
+        ]
+    )
+
+    assert stats["nodes"] >= 3
+    assert store.cards_for_term("夏天")
+    edge_pairs = {(edge["term_a"], edge["term_b"]) for edge in store.list_edges()}
+    assert ("夏天", "空调") in edge_pairs or ("空调", "夏天") in edge_pairs
+
+
+def test_word_map_private_terms_are_excluded(tmp_path):
+    store = WordMapStore(_config(tmp_path, private_terms=["老公"]))
+    store.rebuild(
+        [
+            _bucket(
+                "a",
+                "这段关系里会出现老公这个称呼。",
+                name="亲密称呼",
+                keywords=["老公", "称呼"],
+                domain=["恋爱"],
+            ),
+        ]
+    )
+
+    terms = {node["term"] for node in store.list_nodes()}
+    assert "老公" not in terms
+    assert "称呼" in terms
