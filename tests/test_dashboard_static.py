@@ -100,6 +100,8 @@ def test_dashboard_breath_view_loads_gateway_injection_debug():
     assert "function gatewayChainDebugSummaries(payload)" in html
     assert "direct render:" in html
     assert "diffused chain:" in html
+    assert "date trace yes" in html
+    assert "date trace no" in html
     assert 'class="gateway-injections-content"' in html
     assert 'class="gateway-injection-list"' in html
     assert 'class="gateway-injection-item"' in html

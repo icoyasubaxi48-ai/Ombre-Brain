@@ -5267,6 +5267,7 @@ function renderGatewayInjectionItem(item) {
     { text: 'diffused ' + diffused.length, state: diffused.length ? 'allow' : '' },
     { text: 'injected ' + injected.length, state: injected.length ? 'allow' : '' },
     { text: payload.recent_context_injected ? 'recent yes' : 'recent no', state: payload.recent_context_injected ? 'allow' : '' },
+    { text: payload.date_persona_trace_injected ? 'date trace yes' : 'date trace no', state: payload.date_persona_trace_injected ? 'allow' : '' },
   ];
   if (dreamStatus.status) {
     chips.push({

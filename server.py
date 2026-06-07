@@ -51,8 +51,9 @@ import secrets
 import time
 from base64 import b64decode
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlparse
+from zoneinfo import ZoneInfo
 import httpx
 
 
@@ -1042,12 +1043,25 @@ def _format_handoff_relationship_weather(all_buckets: list[dict]) -> str:
         reverse=True,
     )
     lines = []
-    for bucket in weather[:2]:
+    recent_dates = _handoff_recent_date_keys()
+    for index, bucket in enumerate(weather[:3]):
         meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
-        text = strip_display_temperature_sections(strip_temperature_meaning_lines(bucket.get("content", "")))
-        text = _clip_text(text, 220)
-        if text:
-            lines.append(f"- [relationship_weather bucket_id:{bucket.get('id', '')}] {text}")
+        date_key = _bucket_handoff_date(bucket)
+        bucket_id = str(bucket.get("id") or "")
+        is_recent = bool(date_key and date_key in recent_dates)
+        if is_recent or index == 0:
+            text = _clip_text(_handoff_clean_summary_text(bucket.get("content", "")), 220)
+            if text:
+                prefix = f"{date_key}: " if date_key else ""
+                lines.append(f"- [relationship_weather bucket_id:{bucket_id}] {prefix}{text}")
+        else:
+            text = _handoff_short_summary(bucket.get("content", ""), max_chars=72)
+            if text:
+                date_part = f"{date_key}: " if date_key else ""
+                query = f"{date_key} 关系天气" if date_key else str(meta.get("name") or "关系天气")
+                hint = _handoff_query_hint(query)
+                suffix = f"；{hint}" if hint else ""
+                lines.append(f"- [relationship_weather bucket_id:{bucket_id}] {date_part}{text}{suffix}")
     return "\n".join(lines)
 
 
@@ -1091,10 +1105,11 @@ def _format_handoff_anchors(all_buckets: list[dict], limit: int = 2) -> str:
     for bucket in _select_anchor_buckets(all_buckets, limit=limit):
         meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
         title = str(meta.get("name") or bucket.get("id") or "").strip()
-        path = str(bucket.get("path") or "").strip()
-        text = _clip_text(bucket.get("content", ""), 160)
-        path_part = f" path:{path}" if path else ""
-        lines.append(f"- [bucket_id:{bucket.get('id', '')}{path_part}] {title}: {text}")
+        text = _handoff_short_summary(bucket.get("content", ""), max_chars=72)
+        query = title or str(bucket.get("id") or "")
+        hint = _handoff_query_hint(query)
+        suffix = f"；{hint}" if hint else ""
+        lines.append(f"- [bucket_id:{bucket.get('id', '')}] {title}: {text}{suffix}")
     return "\n".join(lines)
 
 
@@ -2084,6 +2099,77 @@ def _clip_text(text: str, max_chars: int) -> str:
     if len(compact) <= max_chars:
         return compact
     return compact[:max_chars].rstrip() + "..."
+
+
+def _handoff_timezone():
+    for section in ("portrait", "reflection"):
+        value = config.get(section, {}) if isinstance(config.get(section, {}), dict) else {}
+        name = str(value.get("timezone") or "").strip()
+        if name:
+            try:
+                return ZoneInfo(name)
+            except Exception:
+                pass
+    return ZoneInfo("Asia/Shanghai")
+
+
+def _handoff_today_key() -> str:
+    return datetime.now(_handoff_timezone()).date().isoformat()
+
+
+def _handoff_recent_date_keys() -> set[str]:
+    today = datetime.fromisoformat(_handoff_today_key()).date()
+    return {today.isoformat(), (today - timedelta(days=1)).isoformat()}
+
+
+def _bucket_handoff_date(bucket: dict) -> str:
+    meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+    explicit = str(meta.get("date") or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", explicit):
+        return explicit
+    for key in ("created", "updated_at", "last_active"):
+        raw = str(meta.get(key) or "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=_handoff_timezone())
+        return parsed.astimezone(_handoff_timezone()).date().isoformat()
+    return ""
+
+
+def _handoff_clean_summary_text(content: str, *, include_detail_sections: bool = False) -> str:
+    text = strip_display_temperature_sections(strip_temperature_meaning_lines(str(content or "")))
+    if not include_detail_sections:
+        text = re.split(
+            r"\n\s*###\s+(?:moment|affect_anchor|reflection|assistant_reflection)\b",
+            text,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+    text = re.sub(r"^#+\s*\S+\s*", "", text.strip())
+    return " ".join(strip_wikilinks(text).split())
+
+
+def _handoff_short_summary(content: str, *, max_chars: int = 72) -> str:
+    text = _handoff_clean_summary_text(content)
+    if not text:
+        text = _handoff_clean_summary_text(content, include_detail_sections=True)
+    match = re.search(r"[。！？!?；;]", text)
+    if match and match.end() >= 18:
+        text = text[:match.end()]
+    return _clip_text(text, max_chars)
+
+
+def _handoff_query_hint(query: str) -> str:
+    query = str(query or "").strip()
+    if not query:
+        return ""
+    escaped = query.replace("\\", "\\\\").replace('"', '\\"')
+    return f"细节用 breath(query=\"{escaped}\") 查。"
 
 
 async def _refresh_bucket_embedding(bucket_id: str) -> bool:

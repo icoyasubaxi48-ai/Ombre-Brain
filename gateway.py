@@ -1032,6 +1032,7 @@ class GatewayService:
         all_buckets = await self.bucket_mgr.list_all(include_archive=False)
         current_user_query = self._extract_current_turn_user_query(messages)
         is_new_user_turn = bool(current_user_query)
+        has_handoff_context = self._messages_contain_handoff_context(messages)
 
         persona_block = ""
         core_memory = ""
@@ -1211,6 +1212,7 @@ class GatewayService:
                 session_id,
                 current_user_query,
                 has_reliable_dynamic_context=reliable_dynamic_context,
+                has_handoff_context=has_handoff_context,
             ):
                 explicit_recent_query = self._query_requests_recent_context(current_user_query)
                 recent_context = await self._build_recent_context_block(
@@ -3130,6 +3132,17 @@ class GatewayService:
             continue
         return ""
 
+    def _messages_contain_handoff_context(self, messages: list[dict[str, Any]]) -> bool:
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            text = self._coerce_message_text(message.get("content"))
+            if "=== Handoff Context ===" in text:
+                return True
+            if "Handoff Context" in text and "Use this compact private block" in text:
+                return True
+        return False
+
     def _coerce_message_text(self, content: Any) -> str:
         if isinstance(content, str):
             return content
@@ -3599,11 +3612,14 @@ class GatewayService:
         query_text: str,
         *,
         has_reliable_dynamic_context: bool = False,
+        has_handoff_context: bool = False,
     ) -> bool:
         if self.recent_budget <= 0 or self.head_recent_hours <= 0:
             return False
         if self._query_requests_recent_context(query_text):
             return True
+        if has_handoff_context:
+            return False
         if self._auto_query_too_vague(query_text):
             return False
         if self._recent_context_in_cooldown(session_id):

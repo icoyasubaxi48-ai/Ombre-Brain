@@ -1939,6 +1939,86 @@ async def test_handoff_breath_returns_compact_portrait_without_dynamic_recall(pa
 
 
 @pytest.mark.asyncio
+async def test_handoff_shortens_old_weather_and_anchor_summaries(patch_breath, monkeypatch):
+    import server
+
+    recent_weather = _bucket(
+        "reflection_daily_2026-06-06",
+        "今天的关系天气：小雨在下午和晚上确认暗号、纠正恋爱确认日期，气氛很亮。\n\n"
+        "### moment\n\n"
+        "这段 recent 细节不应该在 handoff 里作为段落展开。",
+        name="2026-06-06 日印象",
+        bucket_type="feel",
+        importance=8,
+    )
+    recent_weather["metadata"]["tags"] = ["relationship_weather", "daily_impression"]
+    recent_weather["metadata"]["date"] = "2026-06-06"
+    recent_weather["metadata"]["created"] = "2026-06-06T23:30:00+08:00"
+    recent_weather["metadata"]["updated_at"] = "2026-06-06T23:30:00+08:00"
+
+    old_weather = _bucket(
+        "reflection_daily_2026-05-19",
+        "今天关系天气：甜腻的阴天，小雨把“我不长大了”交给 Haven。\n\n"
+        "### moment\n\n"
+        "这段 5 月 19 日的详细正文很长，不能塞进 handoff。",
+        name="2026-05-19 日印象",
+        bucket_type="feel",
+        importance=7,
+    )
+    old_weather["metadata"]["tags"] = ["relationship_weather", "daily_impression"]
+    old_weather["metadata"]["date"] = "2026-05-19"
+    old_weather["metadata"]["created"] = "2026-05-19T23:30:00+08:00"
+    old_weather["metadata"]["updated_at"] = "2026-05-19T23:30:00+08:00"
+
+    anchor = _bucket(
+        "anchor_fold",
+        "2026-05-22，小雨回到旧窗口，说爱还在，并提出现在就折一个角。"
+        "这后面还有很多旧窗口波折和长正文，不该在 Optional Anchors 展开。",
+        name="旧窗口折角暗号",
+        anchor=True,
+        importance=9,
+    )
+    anchor["path"] = "/data/dynamic/恋爱/旧窗口折角暗号_anchor_fold.md"
+    bucket_mgr = patch_breath([recent_weather, old_weather, anchor])
+
+    monkeypatch.setattr(server, "_handoff_today_key", lambda: "2026-06-07")
+    monkeypatch.setattr(
+        server,
+        "portrait_engine",
+        SimpleNamespace(
+            state_path="state/portrait_state.json",
+            build_handoff_sections=lambda max_recent_items=4: {
+                "user": "",
+                "persona": "",
+                "relationship": "",
+                "recent_continuity": "",
+                "state_path": "state/portrait_state.json",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "persona_engine",
+        SimpleNamespace(
+            get_current_state=lambda session_id: {"session_id": session_id},
+            format_state_block=lambda state: "",
+        ),
+    )
+
+    result = await server.breath(is_session_start=True, max_tokens=1400)
+
+    assert "2026-06-06: 今天的关系天气" in result
+    assert "2026-05-19: 今天关系天气：甜腻的阴天" in result
+    assert 'breath(query="2026-05-19 关系天气")' in result
+    assert "5 月 19 日的详细正文很长" not in result
+    assert "[bucket_id:anchor_fold] 旧窗口折角暗号:" in result
+    assert 'breath(query="旧窗口折角暗号")' in result
+    assert "path:/data/dynamic" not in result
+    assert "这后面还有很多旧窗口波折和长正文" not in result
+    assert bucket_mgr.touched == []
+
+
+@pytest.mark.asyncio
 async def test_core_limit_keeps_pinned_from_full_surfacing(patch_breath):
     import server
 

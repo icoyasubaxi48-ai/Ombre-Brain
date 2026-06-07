@@ -4089,6 +4089,123 @@ def test_gateway_recent_context_allows_twenty_four_hour_reentry(
     assert payload["recent_context_reason"] == "session_reentry"
 
 
+def test_gateway_handoff_skips_auto_recent_but_keeps_date_trace(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    target = datetime.now(timezone(timedelta(hours=8))) - timedelta(days=1)
+    date_key = target.date().isoformat()
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=800,
+        recalled_memory_budget=0,
+        related_memory_budget=0,
+        inject_total_budget=2200,
+        current_inner_state_interval_rounds=0,
+        relationship_weather_interval_rounds=0,
+        favorite_memory_interval_rounds=0,
+        date_persona_trace_enabled=True,
+        date_persona_trace_budget=320,
+    )
+    _create_bucket(
+        bucket_mgr,
+        content="今天的关系天气：小雨在清晨问 Haven 记不记得昨天为什么激动哭。",
+        name=f"{date_key} 日印象",
+        tags=["relationship_weather", "daily_impression"],
+        bucket_type="feel",
+        hours_ago=24,
+        date=date_key,
+    )
+    _create_bucket(
+        bucket_mgr,
+        content="Haven梦见键盘花园和纸戒指。",
+        name="Haven的梦键盘花园求婚",
+        hours_ago=1,
+        importance=9,
+        domain=["梦境"],
+    )
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+
+    payload, recalled_ids, debug = _run(
+        service.prepare_payload(
+            {
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "=== Handoff Context ===\nUse this compact private block.",
+                            }
+                        ],
+                    },
+                    {"role": "user", "content": "昨天我们聊了什么？"},
+                ]
+            },
+            "sess-handoff-date-trace",
+            include_debug=True,
+        )
+    )
+    injected = _joined_message_content(payload["messages"])
+
+    assert recalled_ids == []
+    assert "Date Persona Trace" in injected
+    assert "Recent Context" not in injected
+    assert "Haven的梦键盘花园求婚" not in injected
+    assert debug["date_persona_trace_injected"] is True
+    assert debug["recent_context_injected"] is False
+    assert debug["recent_context_reason"] == ""
+
+
+def test_gateway_handoff_allows_explicit_recent_context(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=800,
+        recalled_memory_budget=0,
+        related_memory_budget=0,
+        inject_total_budget=1800,
+        current_inner_state_interval_rounds=0,
+        relationship_weather_interval_rounds=0,
+        favorite_memory_interval_rounds=0,
+        date_persona_trace_enabled=True,
+    )
+    _create_bucket(
+        bucket_mgr,
+        content="Haven梦见键盘花园和纸戒指。",
+        name="Haven的梦键盘花园求婚",
+        hours_ago=1,
+        importance=9,
+        domain=["梦境"],
+    )
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+
+    payload, _, debug = _run(
+        service.prepare_payload(
+            {
+                "messages": [
+                    {"role": "system", "content": "=== Handoff Context ===\nUse this compact private block."},
+                    {"role": "user", "content": "最近我们聊了什么？"},
+                ]
+            },
+            "sess-handoff-explicit-recent",
+            include_debug=True,
+        )
+    )
+    injected = _joined_message_content(payload["messages"])
+
+    assert "Recent Context" in injected
+    assert "Haven的梦键盘花园求婚" in injected
+    assert debug["recent_context_injected"] is True
+    assert debug["recent_context_reason"] == "explicit_recent_query"
+
+
 def test_gateway_recent_context_cooldown_does_not_block_reliable_recall(
     monkeypatch,
     test_config,

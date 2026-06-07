@@ -428,3 +428,121 @@ def test_handoff_recent_continuity_sorts_equal_timestamps_without_dict_compare(t
 
     assert "小雨最近在调整换窗 handoff" in sections["recent_continuity"]
     assert "关系画像要优先于旧记忆堆" in sections["recent_continuity"]
+
+
+def test_load_state_drops_initial_run_daily_summary(tmp_path, test_config):
+    state_path = tmp_path / "state" / "portrait_state.json"
+    engine = DailyPortraitMaintainer(
+        {
+            **test_config,
+            "portrait": {
+                "enabled": True,
+                "state_path": str(state_path),
+            },
+        }
+    )
+    state = engine._empty_state()
+    state["daily_summaries"]["2026-06-07"] = "第一次画像扫全库时生成的假当天摘要。"
+    state["runs"].append(
+        {
+            "date": "2026-06-07",
+            "created_at": "2026-06-07T03:00:00+00:00",
+            "initial": True,
+        }
+    )
+    engine.save_state(state)
+
+    loaded = engine.load_state()
+
+    assert loaded["daily_summaries"] == {}
+
+
+@pytest.mark.asyncio
+async def test_initial_portrait_keeps_recent_days_by_source_date_and_demotes_older(tmp_path, test_config, bucket_mgr):
+    previous_day_id = await bucket_mgr.create(
+        content="### moment\n\n这是前一天材料，可以按 2026-06-06 展示。",
+        name="前一天材料",
+        tags=["relationship_event"],
+        created="2026-06-06T20:00:00+08:00",
+        updated_at="2026-06-06T20:00:00+08:00",
+    )
+    current_id = await bucket_mgr.create(
+        content="### moment\n\n这是 2026-06-07 当天材料，可以进入 Recent Continuity。",
+        name="当天材料",
+        tags=["relationship_event"],
+        created="2026-06-07T01:00:00+08:00",
+        updated_at="2026-06-07T01:00:00+08:00",
+    )
+    old_id = await bucket_mgr.create(
+        content="### moment\n\n这是更旧材料，不该进入 Recent Continuity。",
+        name="更旧材料",
+        tags=["relationship_event"],
+        created="2026-05-19T20:00:00+08:00",
+        updated_at="2026-05-19T20:00:00+08:00",
+    )
+    state_path = tmp_path / "state" / "portrait_state.json"
+    engine = DailyPortraitMaintainer(
+        {
+            **test_config,
+            "portrait": {
+                "enabled": True,
+                "state_path": str(state_path),
+                "first_run_material_limit": 8,
+            },
+        }
+    )
+
+    async def fake_patch(date_key, state, materials, *, initial):
+        assert initial is True
+        return {
+            "daily_summary": "不应该保存成当天摘要。",
+            "add_recent": [
+                {
+                    "scope": "relationship",
+                    "text": "前一天材料应该在 2026-06-06 下展示。",
+                    "evidence": [{"bucket_id": previous_day_id}],
+                    "confidence": 0.72,
+                },
+                {
+                    "scope": "relationship",
+                    "text": "更旧材料不应当进入 Recent Continuity。",
+                    "evidence": [{"bucket_id": old_id}],
+                    "confidence": 0.72,
+                },
+                {
+                    "scope": "relationship",
+                    "text": "当天凌晨材料可以进入 recent。",
+                    "evidence": [{"bucket_id": current_id}],
+                    "confidence": 0.72,
+                },
+            ],
+            "move_to_staging": [],
+            "rewrite_mid_term": [],
+            "stable_candidate": [],
+            "profile_fact_candidate": [],
+            "skip": [],
+        }
+
+    engine._generate_patch = fake_patch
+    await engine.maintain_daily(
+        bucket_mgr,
+        force=True,
+        now=datetime(2026, 6, 7, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    state = engine.load_state()
+    relationship = state["portrait"]["relationship"]
+
+    assert state["daily_summaries"] == {}
+    recent_texts = {row["text"] for row in relationship["recent_buffer"]}
+    assert recent_texts == {
+        "当天凌晨材料可以进入 recent。",
+        "前一天材料应该在 2026-06-06 下展示。",
+    }
+    assert {row["source_date"] for row in relationship["recent_buffer"]} == {"2026-06-07", "2026-06-06"}
+    assert [row["text"] for row in relationship["staging_pool"]] == ["更旧材料不应当进入 Recent Continuity。"]
+
+    continuity = engine.build_handoff_sections(max_recent_items=4)["recent_continuity"]
+    assert "2026-06-07 / relationship: 当天凌晨材料可以进入 recent" in continuity
+    assert "2026-06-06 / relationship: 前一天材料应该在 2026-06-06 下展示" in continuity
+    assert "更旧材料" not in continuity
