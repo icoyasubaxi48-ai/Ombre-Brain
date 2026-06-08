@@ -750,7 +750,7 @@ rm /srv/ombre-brain/state/.dashboard_auth.json
 
 ## MCP 工具口径
 
-给 Operit 或其它平台配置指令时，不要把 MCP 工具模式和 Gateway 自动注入模式混在一起。客户端现在只建议暴露 6 个工具；其它调试、维修、批量维护能力放到 Dashboard、脚本或开发环境里。
+给 Operit 或其它平台配置指令时，不要把 MCP 工具模式和 Gateway 自动注入模式混在一起。客户端现在建议暴露 10 个日常工具；其它调试、维修、批量维护能力放到 Dashboard、脚本或开发环境里。
 
 可直接复制的工具清单见 [`docs/Tool Guide.md`](<docs/Tool Guide.md>)。
 
@@ -758,10 +758,14 @@ rm /srv/ombre-brain/state/.dashboard_auth.json
 | --- | --- |
 | `breath` | 只读浮现或检索记忆；新窗口用 `mode="handoff"` 或 `is_session_start=true`；具体事件用 `query` 查。 |
 | `read_bucket` | 按 bucket_id 精确读取完整记忆；准备改旧记忆或追细节前使用。 |
+| `comment_bucket` | 给已有记忆追加年轮/评论；适合“读到旧记忆后的新感受或补充”。 |
 | `hold` | 写单条长期记忆；`whisper=True` 写无源悄悄话。 |
+| `darkroom_enter` | 写入私密暗房，只返回门口状态，不回显正文。 |
 | `grow` | 长内容摘记；只喂已经筛过的长期记忆点，不要整篇流水账原样写入。 |
 | `profile_fact` | 手动固化带证据的用户画像事实；需要 evidence bucket/moment。 |
-| `darkroom_enter` | 写入私密暗房，只返回门口状态，不回显正文。 |
+| `trace` | 修改、归档、删除或沉底旧记忆前使用；先 `read_bucket` 再操作。 |
+| `pulse` | 查看记忆系统概览和近期状态。 |
+| `introspection` | 清醒回看最近普通记忆；原 `dream()` 自省入口的新名字。 |
 
 Favorite Memory 受控触发：新写入推荐 `ai_favorite`；旧 `haven_favorite` 兼容；`<ai_name>_favorite` 也会识别。`flavor_*` 只是口味/温度标签，也必须写喜欢原因，但不会单独触发 Favorite Memory 注入。
 ## 年轮、whisper 与 Relationship Weather
