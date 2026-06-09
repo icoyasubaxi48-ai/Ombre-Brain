@@ -2501,8 +2501,21 @@ class GatewayService:
             for moment in items:
                 if moment not in ordered:
                     ordered.append(moment)
+            # Deduplicate: if a moment is very similar to a body, skip the moment
+            body_texts = {
+                self._moment_text(m, 320) for m in ordered
+                if str(m.get("section") or "body") in {"body", "fact", "original", "evidence_context", "context"}
+            }
+            deduped: list[dict[str, Any]] = []
+            for moment in ordered:
+                section = str(moment.get("section") or "body")
+                if section == "moment" and body_texts:
+                    m_text = self._moment_text(moment, 320)
+                    if any(m_text in bt or bt in m_text for bt in body_texts):
+                        continue
+                deduped.append(moment)
             lines.append(title)
-            for moment in ordered[:limit]:
+            for moment in deduped[:limit]:
                 lines.append(f"- [moment_id:{moment.get('moment_id') or ''}] {self._moment_text(moment, 320)}")
 
         if selected or intent.get("raw"):

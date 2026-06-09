@@ -6144,6 +6144,22 @@ async def hold(
 
     content = _normalize_memory_sections_for_write(content)
 
+    # --- Step 0.5: auto-generate moment if missing / 没有 moment 时自动生成 ---
+    if "### moment" not in content:
+        body_text = content.split("###")[0].strip() if "###" in content else content.strip()
+        if body_text and len(body_text) >= 10:
+            try:
+                generated_moment = await dehydrator.generate_moment(body_text)
+            except Exception:
+                generated_moment = ""
+            if generated_moment:
+                # Insert moment after body, before first ### section
+                if "###" in content:
+                    parts = content.split("###", 1)
+                    content = f"{parts[0].strip()}\n\n### moment\n{generated_moment}\n\n### {parts[1]}"
+                else:
+                    content = f"{content.strip()}\n\n### moment\n{generated_moment}"
+
     # --- Step 1: auto-tagging / 自动打标 ---
     try:
         analysis = await dehydrator.analyze(content)
@@ -6315,6 +6331,21 @@ async def grow(content: str, auto: bool = False, source: str = "", title: str = 
             return _format_write_gate_result(gate_decision)
     gate_prefix = f"{_format_write_gate_result(gate_decision)}\n" if gate_decision else ""
     content = _normalize_memory_sections_for_write(content)
+
+    # --- Auto-generate moment if missing / 没有 moment 时自动生成 ---
+    if "### moment" not in content:
+        body_text = content.split("###")[0].strip() if "###" in content else content.strip()
+        if body_text and len(body_text) >= 10:
+            try:
+                generated_moment = await dehydrator.generate_moment(body_text)
+            except Exception:
+                generated_moment = ""
+            if generated_moment:
+                if "###" in content:
+                    parts = content.split("###", 1)
+                    content = f"{parts[0].strip()}\n\n### moment\n{generated_moment}\n\n### {parts[1]}"
+                else:
+                    content = f"{content.strip()}\n\n### moment\n{generated_moment}"
 
     # --- Short content fast path: skip digest, use hold logic directly ---
     # --- 短内容快速路径：跳过 digest 拆分，直接走 hold 逻辑省一次 API ---

@@ -601,6 +601,42 @@ class Dehydrator:
         }
 
     # ---------------------------------------------------------
+    # Generate a short moment sentence from body text
+    # 从正文生成一句短 moment 摘要
+    # ---------------------------------------------------------
+    async def generate_moment(self, body: str) -> str:
+        """
+        Generate a one-sentence moment summary from body text.
+        从正文生成一句短 moment 摘要。
+        Returns empty string on failure or if body is too short.
+        """
+        if not body or not body.strip() or len(body.strip()) < 10:
+            return ""
+        if not self.api_available:
+            return ""
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": (
+                        "你是一个记忆摘要器。请从以下正文里提取一句 15~40 字的短句，"
+                        "描述核心事件或状态。只输出那句话，不要加引号、标题或解释。"
+                    )},
+                    {"role": "user", "content": body[:1500]},
+                ],
+                **self._completion_options(max_tokens=64, temperature=0.0),
+            )
+            raw = response.choices[0].message.content if response.choices else ""
+            text = raw.strip().strip('"').strip("'").strip()
+            # Keep it short
+            if len(text) > 60:
+                text = text[:57] + "..."
+            return text
+        except Exception as e:
+            logger.warning(f"Generate moment failed / 生成 moment 失败: {e}")
+            return ""
+
+    # ---------------------------------------------------------
     # Long-note memory digest: split selected durable notes into independent entries
     # 长内容摘记：把筛选后的长期记忆片段拆成多个独立条目
     # For the "grow" tool — do not feed whole day-end diaries by default.
