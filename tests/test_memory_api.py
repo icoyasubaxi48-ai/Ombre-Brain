@@ -3108,6 +3108,19 @@ async def test_config_get_reports_gateway_recall_modes(monkeypatch):
     monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
     monkeypatch.setattr(
         server,
+        "reranker_engine",
+        SimpleNamespace(
+            enabled=True,
+            model="rerank-live",
+            base_url="https://rerank-live.example/v1",
+            api_key="rerank-secret",
+            timeout=3.5,
+            candidate_limit=7,
+            score_weight=0.4,
+        ),
+    )
+    monkeypatch.setattr(
+        server,
         "config",
         {
             **server.config,
@@ -3140,6 +3153,14 @@ async def test_config_get_reports_gateway_recall_modes(monkeypatch):
                 "memory_detail_recall_max_ids": 2,
                 "memory_detail_recall_budget": 900,
             },
+            "reranker": {
+                "enabled": True,
+                "model": "rerank-live",
+                "base_url": "https://rerank-live.example/v1",
+                "timeout_seconds": 3.5,
+                "candidate_limit": 7,
+                "score_weight": 0.4,
+            },
             "self_anchor": {"entry_bucket_id": "self_total"},
         },
     )
@@ -3169,6 +3190,13 @@ async def test_config_get_reports_gateway_recall_modes(monkeypatch):
     assert payload["gateway"]["memory_detail_recall_enabled"] is True
     assert payload["gateway"]["memory_detail_recall_max_ids"] == 2
     assert payload["gateway"]["memory_detail_recall_budget"] == 900
+    assert payload["reranker"]["enabled"] is True
+    assert payload["reranker"]["model"] == "rerank-live"
+    assert payload["reranker"]["base_url"] == "https://rerank-live.example/v1"
+    assert payload["reranker"]["api_ready"] is True
+    assert payload["reranker"]["timeout_seconds"] == 3.5
+    assert payload["reranker"]["candidate_limit"] == 7
+    assert payload["reranker"]["score_weight"] == 0.4
     assert payload["recall"]["query_resurface_enabled"] is True
     assert payload["self_anchor"]["entry_bucket_id"] == "self_total"
 
@@ -3460,6 +3488,14 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
                     "retain_after_inject": True,
                     "model": "dream-new",
                 },
+                "reranker": {
+                    "enabled": False,
+                    "model": "rerank-new",
+                    "base_url": "https://rerank-new.example/v1",
+                    "timeout_seconds": 2.5,
+                    "candidate_limit": 6,
+                    "score_weight": 0.4,
+                },
                 "gateway": {
                     "cooldown_hours": 6,
                     "skip_recent_rounds": 5,
@@ -3559,6 +3595,12 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert runtime_config["gateway"]["memory_detail_recall_enabled"] is True
     assert runtime_config["gateway"]["memory_detail_recall_max_ids"] == 2
     assert runtime_config["gateway"]["memory_detail_recall_budget"] == 900
+    assert runtime_config["reranker"]["enabled"] is False
+    assert runtime_config["reranker"]["model"] == "rerank-new"
+    assert runtime_config["reranker"]["base_url"] == "https://rerank-new.example/v1"
+    assert runtime_config["reranker"]["timeout_seconds"] == 2.5
+    assert runtime_config["reranker"]["candidate_limit"] == 6
+    assert runtime_config["reranker"]["score_weight"] == 0.4
     assert runtime_config["self_anchor"]["entry_bucket_id"] == "self_total_entry"
     assert runtime_config["recall"]["query_resurface_enabled"] is True
     assert hot_update_calls[-1] == {
@@ -3595,6 +3637,14 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             "chain_max_hops": 8,
             "chain_min_confidence": 0.76,
             "chain_max_frontier": 36,
+        },
+        "reranker": {
+            "enabled": False,
+            "model": "rerank-new",
+            "base_url": "https://rerank-new.example/v1",
+            "timeout_seconds": 2.5,
+            "candidate_limit": 6,
+            "score_weight": 0.4,
         },
         "persona": {
             "enabled": False,

@@ -9115,6 +9115,7 @@ async def api_config_get(request):
 
     dehy = config.get("dehydration", {})
     emb = config.get("embedding", {})
+    rerank = config.get("reranker", {}) if isinstance(config.get("reranker", {}), dict) else {}
     gateway_cfg = config.get("gateway", {}) if isinstance(config.get("gateway", {}), dict) else {}
     recall_cfg = config.get("recall", {}) if isinstance(config.get("recall", {}), dict) else {}
     diffusion_options = diffusion_options_from_config(config)
@@ -9138,6 +9139,18 @@ async def api_config_get(request):
             "api_key_masked": _mask_key(emb.get("api_key", "")),
             "effective_base_url": embedding_engine.base_url,
             "has_own_api_key": bool(emb.get("api_key", "")),
+        },
+        "reranker": {
+            "enabled": bool(getattr(reranker_engine, "enabled", False)),
+            "model": getattr(reranker_engine, "model", rerank.get("model", "Qwen/Qwen3-Reranker-4B")),
+            "base_url": str(rerank.get("base_url") or getattr(reranker_engine, "base_url", "") or ""),
+            "api_key_masked": _mask_key(rerank.get("api_key", "")),
+            "effective_base_url": getattr(reranker_engine, "base_url", ""),
+            "api_ready": bool(getattr(reranker_engine, "api_key", "") or rerank.get("api_key", "")),
+            "has_own_api_key": bool(rerank.get("api_key", "")),
+            "timeout_seconds": getattr(reranker_engine, "timeout", rerank.get("timeout_seconds", 12)),
+            "candidate_limit": getattr(reranker_engine, "candidate_limit", rerank.get("candidate_limit", 20)),
+            "score_weight": getattr(reranker_engine, "score_weight", rerank.get("score_weight", 0.65)),
         },
         "gateway": {
             "cooldown_hours": gateway_cfg.get("cooldown_hours", 6),
@@ -9300,7 +9313,7 @@ async def api_config_update(request):
     """Hot-update runtime config. Optionally persist to config.yaml."""
     from starlette.responses import JSONResponse
     import yaml
-    global dream_engine, persona_engine, portrait_engine, reflection_engine
+    global dream_engine, persona_engine, portrait_engine, reflection_engine, reranker_engine
     err = _require_dashboard_auth(request)
     if err:
         return err
@@ -9410,8 +9423,51 @@ async def api_config_update(request):
         config["merge_threshold"] = int(body["merge_threshold"])
         updated.append("merge_threshold")
 
-    # --- Gateway memory surfacing config ---
     gateway_hot_update_payload = {}
+    # --- Reranker config ---
+    if "reranker" in body:
+        r = body["reranker"]
+        if not isinstance(r, dict):
+            return JSONResponse({"error": "invalid reranker config"}, status_code=400)
+        reranker_cfg = config.setdefault("reranker", {})
+        reranker_gateway_payload = {}
+        if "enabled" in r:
+            reranker_cfg["enabled"] = _bool_value(r["enabled"], True)
+            reranker_gateway_payload["enabled"] = reranker_cfg["enabled"]
+            os.environ["OMBRE_RERANKER_ENABLED"] = "true" if reranker_cfg["enabled"] else "false"
+            updated.append("reranker.enabled")
+        for key in ("model", "base_url"):
+            if key in r:
+                reranker_cfg[key] = str(r[key] or "").strip()
+                reranker_gateway_payload[key] = reranker_cfg[key]
+                updated.append(f"reranker.{key}")
+        if "timeout_seconds" in r:
+            reranker_cfg["timeout_seconds"] = _float_between(r["timeout_seconds"], 12, 1, 120)
+            reranker_gateway_payload["timeout_seconds"] = reranker_cfg["timeout_seconds"]
+            updated.append("reranker.timeout_seconds")
+        if "candidate_limit" in r:
+            reranker_cfg["candidate_limit"] = _int_between(r["candidate_limit"], 20, 1, 100)
+            reranker_gateway_payload["candidate_limit"] = reranker_cfg["candidate_limit"]
+            updated.append("reranker.candidate_limit")
+        if "score_weight" in r:
+            reranker_cfg["score_weight"] = _float_between(r["score_weight"], 0.65, 0.0, 1.0)
+            reranker_gateway_payload["score_weight"] = reranker_cfg["score_weight"]
+            updated.append("reranker.score_weight")
+        if "api_key" in r and r["api_key"]:
+            reranker_cfg["api_key"] = str(r["api_key"])
+            os.environ["OMBRE_RERANKER_API_KEY"] = reranker_cfg["api_key"]
+            env_updates["OMBRE_RERANKER_API_KEY"] = reranker_cfg["api_key"]
+            reranker_gateway_payload["api_key"] = reranker_cfg["api_key"]
+            updated.append("reranker.api_key")
+        if "base_url" in r:
+            os.environ["OMBRE_RERANKER_BASE_URL"] = reranker_cfg.get("base_url", "")
+        if "model" in r:
+            os.environ["OMBRE_RERANKER_MODEL"] = reranker_cfg.get("model", "")
+        reranker_engine = RerankerEngine(config)
+        if reranker_gateway_payload:
+            gateway_hot_update_payload["reranker"] = reranker_gateway_payload
+
+    # --- Gateway memory surfacing config ---
     if "gateway" in body:
         g = body["gateway"]
         gateway_cfg = config.setdefault("gateway", {})
@@ -9749,6 +9805,36 @@ async def api_config_update(request):
                 for key in ("enabled", "model", "base_url"):
                     if key in body["embedding"]:
                         sc_emb[key] = body["embedding"][key]
+                # Never persist api_key to yaml (use env var)
+
+            if "reranker" in body:
+                sc_reranker = save_config.setdefault("reranker", {})
+                if "enabled" in body["reranker"]:
+                    sc_reranker["enabled"] = _bool_value(body["reranker"]["enabled"], True)
+                for key in ("model", "base_url"):
+                    if key in body["reranker"]:
+                        sc_reranker[key] = str(body["reranker"][key] or "").strip()
+                if "timeout_seconds" in body["reranker"]:
+                    sc_reranker["timeout_seconds"] = _float_between(
+                        body["reranker"]["timeout_seconds"],
+                        12,
+                        1,
+                        120,
+                    )
+                if "candidate_limit" in body["reranker"]:
+                    sc_reranker["candidate_limit"] = _int_between(
+                        body["reranker"]["candidate_limit"],
+                        20,
+                        1,
+                        100,
+                    )
+                if "score_weight" in body["reranker"]:
+                    sc_reranker["score_weight"] = _float_between(
+                        body["reranker"]["score_weight"],
+                        0.65,
+                        0.0,
+                        1.0,
+                    )
                 # Never persist api_key to yaml (use env var)
 
             if "merge_threshold" in body:

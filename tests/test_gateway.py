@@ -522,6 +522,14 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
                     "chain_max_hops": 8,
                     "chain_min_confidence": 0.76,
                 },
+                "reranker": {
+                    "enabled": False,
+                    "model": "rerank-lite",
+                    "base_url": "https://rerank.example/v1",
+                    "timeout_seconds": 2.5,
+                    "candidate_limit": 6,
+                    "score_weight": 0.4,
+                },
             },
         )
 
@@ -555,6 +563,12 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
         "memory_diffusion.chain_walk_enabled",
         "memory_diffusion.chain_max_hops",
         "memory_diffusion.chain_min_confidence",
+        "reranker.enabled",
+        "reranker.model",
+        "reranker.base_url",
+        "reranker.timeout_seconds",
+        "reranker.candidate_limit",
+        "reranker.score_weight",
     ]
     assert service.cooldown_hours == pytest.approx(2.5)
     assert service.skip_recent_rounds == 3
@@ -579,6 +593,12 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
     assert service.memory_detail_recall_max_ids == 2
     assert service.memory_detail_recall_budget == 900
     assert service.word_map_hint_enabled is True
+    assert service.reranker_engine.enabled is False
+    assert service.reranker_engine.model == "rerank-lite"
+    assert service.reranker_engine.base_url == "https://rerank.example/v1"
+    assert service.reranker_engine.timeout == pytest.approx(2.5)
+    assert service.reranker_engine.candidate_limit == 6
+    assert service.reranker_engine.score_weight == pytest.approx(0.4)
     assert service.diffusion_options.top_k == 3
     assert service.diffusion_options.min_activation == pytest.approx(0.22)
     assert service.diffusion_options.chain_walk_enabled is True
@@ -600,6 +620,12 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
     assert response.json()["gateway"]["recalled_memory_budget"] == 520
     assert response.json()["gateway"]["related_memory_budget"] == 180
     assert response.json()["gateway"]["current_inner_state_interval_rounds"] == 9
+    assert response.json()["reranker"]["enabled"] is False
+    assert response.json()["reranker"]["model"] == "rerank-lite"
+    assert response.json()["reranker"]["base_url"] == "https://rerank.example/v1"
+    assert response.json()["reranker"]["timeout_seconds"] == pytest.approx(2.5)
+    assert response.json()["reranker"]["candidate_limit"] == 6
+    assert response.json()["reranker"]["score_weight"] == pytest.approx(0.4)
     assert response.json()["memory_diffusion"]["chain_walk_enabled"] is True
 
 
