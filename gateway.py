@@ -1422,16 +1422,29 @@ class GatewayService:
         include_favorite_memory: bool = False,
         include_debug: bool = False,
     ) -> tuple[dict, list[str] | None] | tuple[dict, list[str] | None, dict[str, Any]]:
+        prepare_started_at = time.perf_counter()
+        prepare_steps_ms: dict[str, int] = {}
+
+        def mark_step(name: str, started_at: float) -> None:
+            elapsed_ms = max(0, int((time.perf_counter() - started_at) * 1000))
+            prepare_steps_ms[name] = prepare_steps_ms.get(name, 0) + elapsed_ms
+
         messages = payload.get("messages")
         if not isinstance(messages, list) or not messages:
             raise ValueError("messages must be a non-empty list")
 
+        stage_started_at = time.perf_counter()
         model = payload.get("model") or self.upstream_default_model
         if not model:
             raise ValueError("model is required when gateway.upstream_default_model is empty")
         self._get_upstream_for_model(model)
+        mark_step("resolve_model", stage_started_at)
 
+        stage_started_at = time.perf_counter()
         all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+        mark_step("list_all_buckets", stage_started_at)
+
+        stage_started_at = time.perf_counter()
         current_user_query = self._extract_current_turn_user_query(messages)
         is_new_user_turn = bool(current_user_query)
         has_handoff_context = self._messages_contain_handoff_context(messages)
@@ -1451,6 +1464,7 @@ class GatewayService:
             self.date_recall_enabled
             and self._query_requests_date_recall(current_user_query)
         )
+        mark_step("classify_request", stage_started_at)
 
         persona_block = ""
         core_memory = ""
@@ -1488,8 +1502,11 @@ class GatewayService:
         persona_state: dict[str, Any] | None = None
         injected_ids: list[str] | None = None
         query_planner_debug: dict[str, Any] = self._query_planner_debug_base(current_user_query)
+        skip_broad_dynamic_recall = False
+        date_persona_trace_requested = False
 
         if is_new_user_turn:
+            stage_started_at = time.perf_counter()
             skip_for_targeted_detail = self._query_should_skip_broad_for_targeted_memory_detail(
                 current_user_query,
                 session_id,
@@ -1500,6 +1517,7 @@ class GatewayService:
                 or just_now_context_requested
                 or date_recall_requested
             )
+            mark_step("targeted_skip_check", stage_started_at)
             if needs_handoff_first:
                 query_planner_debug["skip_reason"] = (
                     "handoff_trigger" if is_handoff_trigger_query else "session_start_handoff"
@@ -1519,31 +1537,43 @@ class GatewayService:
                     )
             elif just_now_context_requested:
                 query_planner_debug["skip_reason"] = "just_now_context"
+                stage_started_at = time.perf_counter()
                 just_now_context, just_now_context_debug = self._build_just_now_chat_context(
                     current_user_query,
                 )
+                mark_step("just_now_context", stage_started_at)
             elif date_recall_requested:
                 query_planner_debug["skip_reason"] = "date_recall"
+                stage_started_at = time.perf_counter()
                 date_recall, date_recall_debug, date_recall_bucket_ids = self._build_date_recall_context(
                     current_user_query,
                     all_buckets,
                 )
+                mark_step("date_recall", stage_started_at)
             if self.persona_engine.enabled and self._should_inject_interval(
                 session_id,
                 self.current_inner_state_interval_rounds,
             ):
+                stage_started_at = time.perf_counter()
                 persona_state = await self.persona_engine.build_pre_reply_guidance(
                     session_id, current_user_query
                 )
                 persona_block = self.persona_engine.format_state_block(persona_state)
+                mark_step("persona_pre_reply", stage_started_at)
             if self.persona_engine.enabled and persona_state is None:
+                stage_started_at = time.perf_counter()
                 persona_state = self._get_persona_state_for_context_mode(session_id)
+                mark_step("persona_state_read", stage_started_at)
+            stage_started_at = time.perf_counter()
             context_mode = self._classify_context_mode(current_user_query, persona_state)
+            mark_step("context_mode", stage_started_at)
             if not needs_handoff_first and not just_now_context_requested and not date_recall_requested and self._should_inject_interval(
                 session_id,
                 self.core_memory_interval_rounds,
             ):
+                stage_started_at = time.perf_counter()
                 core_memory = await self._build_core_memory_block(all_buckets)
+                mark_step("core_memory", stage_started_at)
             if needs_handoff_first or just_now_context_requested or date_recall_requested:
                 portrait_memory_debug["skip_reason"] = (
                     "just_now_context"
@@ -1553,7 +1583,9 @@ class GatewayService:
                     else ("handoff_trigger" if is_handoff_trigger_query else "session_start_handoff")
                 )
             else:
+                stage_started_at = time.perf_counter()
                 portrait_memory, portrait_memory_debug = self._build_portrait_memory_block(all_buckets)
+                mark_step("portrait_memory", stage_started_at)
             if self.recalled_budget > 0 or self.related_memory_budget > 0:
                 if skip_broad_dynamic_recall:
                     logger.info(
@@ -1564,6 +1596,7 @@ class GatewayService:
                     suppressed_moments = []
                     suppressed_buckets = []
                 elif self.retrieval_mode == "bucket":
+                    stage_started_at = time.perf_counter()
                     selected_buckets, suppressed_buckets, query_planner_debug = await self._select_dynamic_buckets(
                         current_user_query,
                         session_id,
@@ -1571,6 +1604,8 @@ class GatewayService:
                         search_query=self._normalized_recall_query(current_user_query),
                         include_query_planner_debug=True,
                     )
+                    mark_step("dynamic_recall_bucket_select", stage_started_at)
+                    stage_started_at = time.perf_counter()
                     selected_buckets = self._with_explicit_source_record_buckets(
                         current_user_query,
                         selected_buckets,
@@ -1594,8 +1629,12 @@ class GatewayService:
                         recalled_moments.append(moment)
                     moment_candidates = list(recalled_moments)
                     suppressed_moments = []
+                    mark_step("dynamic_recall_bucket_format", stage_started_at)
                 else:
+                    stage_started_at = time.perf_counter()
                     all_moments, grouped_moments, moment_edges = self._refresh_moment_graph(all_buckets)
+                    mark_step("moment_graph_refresh", stage_started_at)
+                    stage_started_at = time.perf_counter()
                     (
                         recalled_moments,
                         moment_candidates,
@@ -1609,9 +1648,11 @@ class GatewayService:
                         grouped_moments,
                         include_query_planner_debug=True,
                     )
+                    mark_step("dynamic_recall_graph_select", stage_started_at)
             else:
                 suppressed_moments = []
                 suppressed_buckets = []
+            stage_started_at = time.perf_counter()
             recalled_memory = await self._format_recalled_moments(
                 recalled_moments,
                 grouped_moments,
@@ -1619,6 +1660,7 @@ class GatewayService:
                 self.recalled_budget,
                 current_user_query,
             )
+            mark_step("format_recalled_memory", stage_started_at)
             date_persona_trace_requested = (
                 date_recall_requested
                 or self._query_requests_date_persona_trace(current_user_query)
@@ -1636,19 +1678,26 @@ class GatewayService:
                     else "date_trace_not_requested"
                 )
             else:
+                stage_started_at = time.perf_counter()
                 date_persona_trace, date_persona_trace_debug = self._build_date_persona_trace_block(
                     current_user_query,
                     all_buckets,
                 )
+                mark_step("date_persona_trace", stage_started_at)
             if self._should_inject_interval(session_id, self.relationship_weather_interval_rounds):
+                stage_started_at = time.perf_counter()
                 relationship_weather = await self._build_relationship_weather_block(all_buckets)
+                mark_step("relationship_weather", stage_started_at)
             if (
                 include_favorite_memory
                 or self._query_requests_favorite_memory(current_user_query)
                 or self._should_inject_interval(session_id, self.favorite_memory_interval_rounds)
             ):
+                stage_started_at = time.perf_counter()
                 favorite_memory, favorite_ids = await self._build_favorite_memory_block(all_buckets, session_id)
+                mark_step("favorite_memory", stage_started_at)
             if self.retrieval_mode == "graph":
+                stage_started_at = time.perf_counter()
                 related_memory, diffused_moment_debug = self._build_moment_diffused_memory_with_debug(
                     recalled_moments,
                     moment_candidates,
@@ -1657,8 +1706,10 @@ class GatewayService:
                     current_user_query,
                     context_mode=context_mode,
                 )
+                mark_step("memory_diffusion", stage_started_at)
             else:
                 related_memory = ""
+            stage_started_at = time.perf_counter()
             current_direct_bucket_ids = [
                 str(moment.get("bucket_id") or "")
                 for moment in recalled_moments
@@ -1682,6 +1733,8 @@ class GatewayService:
             current_shown_moment_ids = list(
                 dict.fromkeys(current_direct_moment_ids + current_diffused_moment_ids)
             )
+            mark_step("shown_id_collection", stage_started_at)
+            stage_started_at = time.perf_counter()
             targeted_memory_detail, targeted_memory_detail_debug = self._build_targeted_memory_detail(
                 all_buckets,
                 session_id=session_id,
@@ -1694,6 +1747,7 @@ class GatewayService:
                 current_diffused_moment_ids=current_diffused_moment_ids,
                 recalled_memory=recalled_memory,
             )
+            mark_step("targeted_memory_detail", stage_started_at)
             can_retry_memory_detail = payload.get("stream") is not True
             if self.memory_detail_recall_enabled and can_retry_memory_detail and (
                 recalled_memory.strip()
@@ -1718,21 +1772,26 @@ class GatewayService:
                 has_handoff_context=has_handoff_context or needs_handoff_first,
             ):
                 explicit_recent_query = self._query_requests_recent_context(current_user_query)
+                stage_started_at = time.perf_counter()
                 recent_context = await self._build_recent_context_block(
                     all_buckets,
                     current_user_query,
                     allow_vague=explicit_recent_query,
                 )
+                mark_step("recent_context", stage_started_at)
                 if recent_context.strip():
                     recent_context_reason = self._recent_context_reason(
                         session_id,
                         current_user_query,
                         has_reliable_dynamic_context=reliable_dynamic_context,
                     )
+            stage_started_at = time.perf_counter()
             dream_context, dream_context_status = await self._build_dream_context_block(
                 current_user_query,
                 session_id,
             )
+            mark_step("dream_context", stage_started_at)
+            stage_started_at = time.perf_counter()
             injected_ids = list(
                 dict.fromkeys(
                     [
@@ -1749,12 +1808,14 @@ class GatewayService:
                     ]
                 )
             )
+            mark_step("injected_id_collection", stage_started_at)
         else:
             logger.info(
                 "Gateway dynamic context skipped | session=%s reason=not_current_user_turn",
                 session_id,
             )
 
+        stage_started_at = time.perf_counter()
         stable_context, dynamic_context = self._build_injected_context_messages(
             persona_block=persona_block,
             core_memory=core_memory,
@@ -1773,7 +1834,9 @@ class GatewayService:
             handoff_tool_hint=handoff_tool_hint,
             context_mode=context_mode,
         )
+        mark_step("build_context_messages", stage_started_at)
 
+        stage_started_at = time.perf_counter()
         forward_payload = deepcopy(payload)
         forward_payload["model"] = model
         self._restore_cached_reasoning_content(session_id, forward_payload.get("messages"))
@@ -1784,8 +1847,62 @@ class GatewayService:
         )
         self._apply_prompt_cache_hints(forward_payload, session_id)
         forward_payload["stream"] = payload.get("stream") is True
+        mark_step("finalize_forward_payload", stage_started_at)
+
+        prepare_total_ms = max(0, int((time.perf_counter() - prepare_started_at) * 1000))
+        prepare_timing_debug = {
+            "total_ms": prepare_total_ms,
+            "steps_ms": dict(prepare_steps_ms),
+            "query_chars": len(current_user_query),
+            "message_count": len(messages),
+            "bucket_count": len(all_buckets),
+            "is_new_user_turn": is_new_user_turn,
+            "needs_handoff_first": needs_handoff_first,
+            "just_now_context_requested": just_now_context_requested,
+            "date_recall_requested": date_recall_requested,
+            "date_persona_trace_requested": date_persona_trace_requested,
+            "skip_broad_dynamic_recall": skip_broad_dynamic_recall,
+            "retrieval_mode": self.retrieval_mode,
+            "context_mode": context_mode,
+            "recalled_moment_count": len(recalled_moments),
+            "suppressed_moment_count": len(suppressed_moments),
+            "suppressed_bucket_count": len(suppressed_buckets),
+            "diffused_item_count": len(diffused_moment_debug),
+            "recalled_chars": len(recalled_memory),
+            "diffused_chars": len(related_memory),
+            "date_recall_chars": len(date_recall),
+            "date_trace_chars": len(date_persona_trace),
+            "targeted_detail_chars": len(targeted_memory_detail),
+            "stable_context_chars": len(stable_context),
+            "dynamic_context_chars": len(dynamic_context),
+            "query_planner_triggered": bool(query_planner_debug.get("triggered")),
+            "query_planner_skip_reason": str(query_planner_debug.get("skip_reason") or ""),
+        }
+
+        def log_prepare_timing() -> None:
+            logger.info(
+                "Gateway prepare timing | session=%s model=%s stream=%s total_ms=%s "
+                "query_chars=%s messages=%s buckets=%s recalled=%s diffused=%s "
+                "date_recall=%s date_trace=%s planner=%s planner_skip=%s steps_ms=%s",
+                session_id,
+                model,
+                forward_payload.get("stream") is True,
+                prepare_timing_debug["total_ms"],
+                len(current_user_query),
+                len(messages),
+                len(all_buckets),
+                len(recalled_moments),
+                len(diffused_moment_debug),
+                date_recall_requested,
+                date_persona_trace_requested,
+                bool(query_planner_debug.get("triggered")),
+                query_planner_debug.get("skip_reason") or "",
+                json.dumps(prepare_timing_debug["steps_ms"], ensure_ascii=False, separators=(",", ":")),
+            )
+
         if include_debug:
-            return forward_payload, injected_ids, self._build_injection_debug_payload(
+            stage_started_at = time.perf_counter()
+            debug_payload = self._build_injection_debug_payload(
                 model=model,
                 query=current_user_query,
                 stable_context=stable_context,
@@ -1816,6 +1933,13 @@ class GatewayService:
                 suppressed_buckets=suppressed_buckets,
                 query_planner_debug=query_planner_debug,
             )
+            mark_step("build_debug_payload", stage_started_at)
+            prepare_timing_debug["total_ms"] = max(0, int((time.perf_counter() - prepare_started_at) * 1000))
+            prepare_timing_debug["steps_ms"] = dict(prepare_steps_ms)
+            debug_payload["prepare_timing_debug"] = prepare_timing_debug
+            log_prepare_timing()
+            return forward_payload, injected_ids, debug_payload
+        log_prepare_timing()
         return forward_payload, injected_ids
 
     def _apply_prompt_cache_hints(self, payload: dict[str, Any], session_id: str) -> None:
@@ -2197,12 +2321,30 @@ class GatewayService:
     ) -> Response:
         model = str(payload.get("model") or "").strip()
         route = self._resolve_upstream_for_model(model)
+        stream_started_at = time.perf_counter()
+        upstream_open_started_at = time.perf_counter()
         upstream_response = await self._open_upstream_stream(route, payload)
+        upstream_headers_ms = max(0, int((time.perf_counter() - upstream_open_started_at) * 1000))
         content_type = upstream_response.headers.get("content-type", "text/event-stream")
+        upstream = route["upstream"]
 
         if not 200 <= upstream_response.status_code < 300:
+            body_read_started_at = time.perf_counter()
             body = await upstream_response.aread()
             await upstream_response.aclose()
+            logger.info(
+                "Gateway stream timing | session=%s route=%s upstream=%s model=%s upstream_model=%s "
+                "status=%s error_response=true header_ms=%s body_read_ms=%s total_ms=%s",
+                session_id,
+                "/v1/chat/completions",
+                upstream.get("name"),
+                model,
+                route["upstream_model"],
+                upstream_response.status_code,
+                upstream_headers_ms,
+                max(0, int((time.perf_counter() - body_read_started_at) * 1000)),
+                max(0, int((time.perf_counter() - stream_started_at) * 1000)),
+            )
             return Response(
                 content=body,
                 status_code=upstream_response.status_code,
@@ -2212,6 +2354,11 @@ class GatewayService:
         async def stream_body():
             finalized = False
             stream_state = self._new_stream_capture_state()
+            body_started_at = time.perf_counter()
+            first_chunk_ms: int | None = None
+            header_to_first_chunk_ms: int | None = None
+            chunk_count = 0
+            byte_count = 0
 
             async def finalize_once() -> None:
                 nonlocal finalized
@@ -2232,6 +2379,26 @@ class GatewayService:
             try:
                 async for chunk in upstream_response.aiter_bytes():
                     if chunk:
+                        chunk_count += 1
+                        byte_count += len(chunk)
+                        if first_chunk_ms is None:
+                            now = time.perf_counter()
+                            first_chunk_ms = max(0, int((now - stream_started_at) * 1000))
+                            header_to_first_chunk_ms = max(0, int((now - body_started_at) * 1000))
+                            logger.info(
+                                "Gateway stream first chunk | session=%s route=%s upstream=%s "
+                                "model=%s upstream_model=%s status=%s header_ms=%s "
+                                "first_chunk_ms=%s header_to_first_chunk_ms=%s",
+                                session_id,
+                                "/v1/chat/completions",
+                                upstream.get("name"),
+                                model,
+                                route["upstream_model"],
+                                upstream_response.status_code,
+                                upstream_headers_ms,
+                                first_chunk_ms,
+                                header_to_first_chunk_ms,
+                            )
                         self._consume_stream_capture_chunk(stream_state, chunk)
                         if stream_state.get("seen_done"):
                             await finalize_once()
@@ -2239,6 +2406,26 @@ class GatewayService:
                 self._consume_stream_capture_chunk(stream_state, b"", final=True)
                 await finalize_once()
             finally:
+                logger.info(
+                    "Gateway stream timing | session=%s route=%s upstream=%s model=%s upstream_model=%s "
+                    "status=%s header_ms=%s first_chunk_ms=%s header_to_first_chunk_ms=%s "
+                    "body_ms=%s total_ms=%s chunks=%s bytes=%s finalized=%s seen_done=%s",
+                    session_id,
+                    "/v1/chat/completions",
+                    upstream.get("name"),
+                    model,
+                    route["upstream_model"],
+                    upstream_response.status_code,
+                    upstream_headers_ms,
+                    first_chunk_ms,
+                    header_to_first_chunk_ms,
+                    max(0, int((time.perf_counter() - body_started_at) * 1000)),
+                    max(0, int((time.perf_counter() - stream_started_at) * 1000)),
+                    chunk_count,
+                    byte_count,
+                    finalized,
+                    bool(stream_state.get("seen_done")),
+                )
                 await upstream_response.aclose()
 
         return StreamingResponse(
@@ -4021,11 +4208,29 @@ class GatewayService:
                 injection_debug=injection_debug,
             )
 
+        stream_started_at = time.perf_counter()
+        upstream_open_started_at = time.perf_counter()
         upstream_response = await self._open_upstream_stream(route, payload)
+        upstream_headers_ms = max(0, int((time.perf_counter() - upstream_open_started_at) * 1000))
+        upstream = route["upstream"]
 
         if not 200 <= upstream_response.status_code < 300:
+            body_read_started_at = time.perf_counter()
             body = await upstream_response.aread()
             await upstream_response.aclose()
+            logger.info(
+                "Gateway stream timing | session=%s route=%s upstream=%s model=%s upstream_model=%s "
+                "status=%s error_response=true header_ms=%s body_read_ms=%s total_ms=%s",
+                session_id,
+                "/v1/messages",
+                upstream.get("name"),
+                model,
+                route["upstream_model"],
+                upstream_response.status_code,
+                upstream_headers_ms,
+                max(0, int((time.perf_counter() - body_read_started_at) * 1000)),
+                max(0, int((time.perf_counter() - stream_started_at) * 1000)),
+            )
             return self._proxy_anthropic_error_response(
                 httpx.Response(
                     status_code=upstream_response.status_code,
@@ -4037,6 +4242,11 @@ class GatewayService:
         async def stream_body():
             finalized = False
             stream_state = self._new_stream_capture_state()
+            body_started_at = time.perf_counter()
+            first_chunk_ms: int | None = None
+            header_to_first_chunk_ms: int | None = None
+            chunk_count = 0
+            byte_count = 0
             message_id = f"msg_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
             usage = {"input_tokens": 0, "output_tokens": 0}
             stop_reason = "end_turn"
@@ -4081,6 +4291,26 @@ class GatewayService:
                 async for chunk in upstream_response.aiter_bytes():
                     if not chunk:
                         continue
+                    chunk_count += 1
+                    byte_count += len(chunk)
+                    if first_chunk_ms is None:
+                        now = time.perf_counter()
+                        first_chunk_ms = max(0, int((now - stream_started_at) * 1000))
+                        header_to_first_chunk_ms = max(0, int((now - body_started_at) * 1000))
+                        logger.info(
+                            "Gateway stream first chunk | session=%s route=%s upstream=%s "
+                            "model=%s upstream_model=%s status=%s header_ms=%s "
+                            "first_chunk_ms=%s header_to_first_chunk_ms=%s",
+                            session_id,
+                            "/v1/messages",
+                            upstream.get("name"),
+                            model,
+                            route["upstream_model"],
+                            upstream_response.status_code,
+                            upstream_headers_ms,
+                            first_chunk_ms,
+                            header_to_first_chunk_ms,
+                        )
                     self._consume_stream_capture_chunk(stream_state, chunk)
                     if stream_state.get("seen_done"):
                         await finalize_once()
@@ -4195,6 +4425,26 @@ class GatewayService:
                     {"type": "message_stop"},
                 )
             finally:
+                logger.info(
+                    "Gateway stream timing | session=%s route=%s upstream=%s model=%s upstream_model=%s "
+                    "status=%s header_ms=%s first_chunk_ms=%s header_to_first_chunk_ms=%s "
+                    "body_ms=%s total_ms=%s chunks=%s bytes=%s finalized=%s seen_done=%s",
+                    session_id,
+                    "/v1/messages",
+                    upstream.get("name"),
+                    model,
+                    route["upstream_model"],
+                    upstream_response.status_code,
+                    upstream_headers_ms,
+                    first_chunk_ms,
+                    header_to_first_chunk_ms,
+                    max(0, int((time.perf_counter() - body_started_at) * 1000)),
+                    max(0, int((time.perf_counter() - stream_started_at) * 1000)),
+                    chunk_count,
+                    byte_count,
+                    finalized,
+                    bool(stream_state.get("seen_done")),
+                )
                 await upstream_response.aclose()
 
         return StreamingResponse(
@@ -4218,11 +4468,29 @@ class GatewayService:
         injection_debug: dict[str, Any] | None = None,
     ) -> Response:
         model = str(payload.get("model") or "").strip()
+        stream_started_at = time.perf_counter()
+        upstream_open_started_at = time.perf_counter()
         upstream_response = await self._open_anthropic_upstream_stream(route, payload)
+        upstream_headers_ms = max(0, int((time.perf_counter() - upstream_open_started_at) * 1000))
+        upstream = route["upstream"]
 
         if not 200 <= upstream_response.status_code < 300:
+            body_read_started_at = time.perf_counter()
             body = await upstream_response.aread()
             await upstream_response.aclose()
+            logger.info(
+                "Gateway stream timing | session=%s route=%s upstream=%s model=%s upstream_model=%s "
+                "status=%s error_response=true header_ms=%s body_read_ms=%s total_ms=%s",
+                session_id,
+                "/v1/messages",
+                upstream.get("name"),
+                model,
+                route["upstream_model"],
+                upstream_response.status_code,
+                upstream_headers_ms,
+                max(0, int((time.perf_counter() - body_read_started_at) * 1000)),
+                max(0, int((time.perf_counter() - stream_started_at) * 1000)),
+            )
             return self._proxy_anthropic_error_response(
                 httpx.Response(
                     status_code=upstream_response.status_code,
@@ -4234,6 +4502,11 @@ class GatewayService:
         async def stream_body():
             finalized = False
             stream_state = self._new_stream_capture_state()
+            body_started_at = time.perf_counter()
+            first_chunk_ms: int | None = None
+            header_to_first_chunk_ms: int | None = None
+            chunk_count = 0
+            byte_count = 0
 
             async def finalize_once() -> None:
                 nonlocal finalized
@@ -4254,6 +4527,26 @@ class GatewayService:
             try:
                 async for chunk in upstream_response.aiter_bytes():
                     if chunk:
+                        chunk_count += 1
+                        byte_count += len(chunk)
+                        if first_chunk_ms is None:
+                            now = time.perf_counter()
+                            first_chunk_ms = max(0, int((now - stream_started_at) * 1000))
+                            header_to_first_chunk_ms = max(0, int((now - body_started_at) * 1000))
+                            logger.info(
+                                "Gateway stream first chunk | session=%s route=%s upstream=%s "
+                                "model=%s upstream_model=%s status=%s header_ms=%s "
+                                "first_chunk_ms=%s header_to_first_chunk_ms=%s",
+                                session_id,
+                                "/v1/messages",
+                                upstream.get("name"),
+                                model,
+                                route["upstream_model"],
+                                upstream_response.status_code,
+                                upstream_headers_ms,
+                                first_chunk_ms,
+                                header_to_first_chunk_ms,
+                            )
                         self._consume_anthropic_stream_capture_chunk(stream_state, chunk)
                         if stream_state.get("seen_done"):
                             await finalize_once()
@@ -4261,6 +4554,26 @@ class GatewayService:
                 self._consume_anthropic_stream_capture_chunk(stream_state, b"", final=True)
                 await finalize_once()
             finally:
+                logger.info(
+                    "Gateway stream timing | session=%s route=%s upstream=%s model=%s upstream_model=%s "
+                    "status=%s header_ms=%s first_chunk_ms=%s header_to_first_chunk_ms=%s "
+                    "body_ms=%s total_ms=%s chunks=%s bytes=%s finalized=%s seen_done=%s",
+                    session_id,
+                    "/v1/messages",
+                    upstream.get("name"),
+                    model,
+                    route["upstream_model"],
+                    upstream_response.status_code,
+                    upstream_headers_ms,
+                    first_chunk_ms,
+                    header_to_first_chunk_ms,
+                    max(0, int((time.perf_counter() - body_started_at) * 1000)),
+                    max(0, int((time.perf_counter() - stream_started_at) * 1000)),
+                    chunk_count,
+                    byte_count,
+                    finalized,
+                    bool(stream_state.get("seen_done")),
+                )
                 await upstream_response.aclose()
 
         return StreamingResponse(
