@@ -112,7 +112,7 @@ from memory_layers import (
     normalize_write_classification,
 )
 from memory_metadata import normalize_memory_metadata
-from recall_policy import RecallPolicy
+from recall_policy import RecallPolicy, diffusion_seed_topic_term_has_specific_residue
 from memory_write_gate import MemoryWriteGate, WriteGateDecision
 from memory_nodes import MemoryNodeStore
 from persona_engine import PersonaStateEngine
@@ -4842,6 +4842,84 @@ def _breath_moment_admission_decision(
     )
 
 
+def _breath_moment_has_reliable_seed_signal(
+    query: str,
+    moment: dict,
+    seed_diagnostics: dict[str, dict],
+) -> bool:
+    if not isinstance(moment, dict) or not can_moment_be_direct_seed(moment):
+        return False
+    if should_suppress_context_candidate(query, moment, _recall_relevance_options()):
+        return False
+    meta = moment.get("metadata", {}) if isinstance(moment.get("metadata"), dict) else {}
+    if _is_source_record_synthetic_moment(moment):
+        return bool(meta.get("source_record_fragment_seed"))
+    bucket_id = str(moment.get("bucket_id") or "")
+    seed = seed_diagnostics.get(bucket_id, {})
+    sources = set(seed.get("sources") or [])
+    if "lexical" in sources:
+        return True
+    if _recall_policy().has_strong_score(
+        semantic_score=seed.get("embedding_score"),
+        rerank_score=moment.get("rerank_score"),
+    ):
+        return True
+    return _breath_moment_has_reliable_topic_evidence_for_seed(query, moment)
+
+
+def _breath_moment_has_reliable_topic_evidence_for_seed(query: str, moment: dict) -> bool:
+    terms = [
+        str(term).strip()
+        for term in _specific_query_terms(query)
+        if diffusion_seed_topic_term_has_specific_residue(term)
+    ]
+    if not terms:
+        return False
+    meta = moment.get("metadata", {}) if isinstance(moment.get("metadata"), dict) else {}
+    fields = " ".join(
+        [
+            str(moment.get("text") or ""),
+            str(meta.get("annotation_summary") or ""),
+            str(meta.get("bucket_name") or ""),
+            " ".join(str(tag) for tag in meta.get("bucket_tags", []) or []),
+            " ".join(str(item) for item in meta.get("bucket_domain", []) or []),
+        ]
+    ).lower()
+    return any(term.lower() in fields for term in terms)
+
+
+def _promoted_breath_related_seed_moments(
+    query: str,
+    candidates: list[dict],
+    displayed_bucket_ids: set[str],
+    seed_diagnostics: dict[str, dict],
+    *,
+    limit: int,
+) -> list[dict]:
+    if limit <= 0:
+        return []
+    promoted = []
+    seen = set(displayed_bucket_ids)
+    for moment in candidates or []:
+        bucket_id = str(moment.get("bucket_id") or "")
+        if not bucket_id or bucket_id in seen:
+            continue
+        if not _breath_moment_has_reliable_seed_signal(query, moment, seed_diagnostics):
+            continue
+        item = dict(moment)
+        item["promoted_related_seed"] = True
+        promoted.append(item)
+        seen.add(bucket_id)
+    promoted.sort(
+        key=lambda moment: (
+            _recall_rank(query, moment)[0],
+            -(_safe_float(moment.get("rerank_score")) or 0.0),
+            -(_safe_float(moment.get("combined_score", moment.get("score"))) or 0.0),
+        )
+    )
+    return promoted[:limit]
+
+
 async def _rerank_breath_moment_candidates(query: str, candidates: list[dict]) -> list[dict]:
     if not candidates or not getattr(reranker_engine, "enabled", False):
         return candidates
@@ -6907,9 +6985,21 @@ async def breath(
 
         related_source_buckets = []
         seen_source_bucket_ids = set()
-        for moment in returned_moments:
+        promoted_seed_moments = _promoted_breath_related_seed_moments(
+            query,
+            moment_candidates,
+            displayed_bucket_ids,
+            seed_diagnostics,
+            limit=max(1, related_per_memory),
+        )
+        related_seed_bucket_ids = displayed_bucket_ids | {
+            str(moment.get("bucket_id") or "")
+            for moment in promoted_seed_moments
+            if moment.get("bucket_id")
+        }
+        for moment in list(returned_moments) + promoted_seed_moments:
             bucket_id = str(moment.get("bucket_id") or "")
-            if bucket_id not in displayed_bucket_ids:
+            if bucket_id not in related_seed_bucket_ids:
                 continue
             bucket = bucket_map.get(bucket_id)
             if not bucket or bucket_id in seen_source_bucket_ids:

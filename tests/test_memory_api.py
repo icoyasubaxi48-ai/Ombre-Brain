@@ -3186,6 +3186,58 @@ async def test_resurface_prefers_long_dormant_memory_without_touching(monkeypatc
     assert recent_after["metadata"]["activation_count"] == 0
 
 
+def test_breath_promotes_reliable_hidden_moment_as_related_seed():
+    import server
+
+    displayed = {
+        "bucket_id": "displayed",
+        "moment_id": "m-displayed",
+        "section": "moment",
+        "text": "泛背景直接展示。",
+        "metadata": {"bucket_type": "dynamic", "bucket_name": "泛背景"},
+    }
+    target = {
+        "bucket_id": "target",
+        "moment_id": "m-target",
+        "section": "moment",
+        "text": "海边神庙的故事发生在水边，女祭司把灯放在岸边。",
+        "metadata": {"bucket_type": "dynamic", "bucket_name": "海边神庙的离别故事"},
+    }
+
+    promoted = server._promoted_breath_related_seed_moments(
+        "水边",
+        [displayed, target],
+        {"displayed"},
+        {},
+        limit=1,
+    )
+
+    assert [moment["bucket_id"] for moment in promoted] == ["target"]
+    assert promoted[0]["promoted_related_seed"] is True
+
+
+def test_breath_does_not_promote_generic_code_topic_as_related_seed():
+    import server
+
+    moment = {
+        "bucket_id": "code-romance",
+        "moment_id": "m-code-romance",
+        "section": "moment",
+        "text": "第一行代码改完后的浪漫，是小雨把代码改动也看成关系里的火花。",
+        "metadata": {"bucket_type": "dynamic", "bucket_name": "第一行代码的浪漫"},
+    }
+
+    promoted = server._promoted_breath_related_seed_moments(
+        "今天代码改得怎么样",
+        [moment],
+        set(),
+        {},
+        limit=1,
+    )
+
+    assert promoted == []
+
+
 @pytest.mark.asyncio
 async def test_resurface_includes_archived_buckets_by_default(monkeypatch, bucket_mgr, decay_eng):
     import server

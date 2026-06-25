@@ -117,6 +117,13 @@ OLD_OR_RESOLVED_QUERY_MARKERS = frozenset(
         "obsolete",
     }
 )
+DIFFUSION_SEED_GENERIC_TOPIC_FRAGMENTS = frozenset(
+    {
+        "代码",
+        "项目",
+        "改",
+    }
+)
 CAUTION_CONTEXT_MODES = frozenset({"reflective_repair", "conflict_repair"})
 RESPONSE_ACTION_QUERY_MARKERS = frozenset(
     {
@@ -1659,6 +1666,19 @@ def _context_only_heading(heading: str) -> bool:
     normalized = re.sub(r"^\d+[.、]\s*", "", normalized)
     normalized = normalized.replace("-", "_")
     return CONTEXT_ONLY_SECTION_ALIASES.get(normalized, normalized) in CONTEXT_ONLY_SECTIONS
+
+
+def diffusion_seed_topic_term_has_specific_residue(term: object) -> bool:
+    residue = re.sub(
+        r"[^0-9a-z\u4e00-\u9fff_.:-]+",
+        "",
+        str(term or "").strip().lower(),
+    )
+    if not residue:
+        return False
+    for generic in sorted(DIFFUSION_SEED_GENERIC_TOPIC_FRAGMENTS, key=len, reverse=True):
+        residue = residue.replace(generic, "")
+    return bool(residue.strip())
 
 
 def _term_subsumes(container: str, contained: str) -> bool:

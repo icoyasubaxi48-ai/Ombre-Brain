@@ -9064,6 +9064,57 @@ def test_concrete_short_query_uses_direct_lexical_seed_when_search_misses(
     assert planner_debug["final_bucket_ids"] == [bucket_id]
 
 
+def test_reliable_moment_hit_promotes_to_direct_seed_when_bucket_seed_misses(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        query_planner_enabled=False,
+        retrieval_mode="graph",
+        inject_max_cards=1,
+        first_card_min_score=0.35,
+        word_map_hint_enabled=False,
+    )
+    weak_bucket_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n小雨与 Haven 的爱是泛背景，不含这次具体地点。",
+        name="小雨与Haven的爱",
+        hours_ago=12,
+    )
+    target_bucket_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n海边神庙的故事发生在水边，女祭司把灯放在岸边。",
+        name="海边神庙的离别故事",
+        hours_ago=12,
+    )
+    all_buckets = _run(bucket_mgr.list_all())
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr, embedding_results=[])
+
+    async def fake_select_dynamic_buckets(query, session_id, buckets, **kwargs):
+        weak_bucket = next(bucket for bucket in buckets if bucket["id"] == weak_bucket_id)
+        return [weak_bucket], [], service._query_planner_debug_base(query)
+
+    monkeypatch.setattr(service, "_select_dynamic_buckets", fake_select_dynamic_buckets)
+    all_moments, grouped_moments, _ = service._refresh_moment_graph(all_buckets)
+    selected, candidates, _suppressed, _suppressed_buckets, planner_debug = _run(
+        service._select_dynamic_moments(
+            "水边",
+            "sess-promote-moment-hit",
+            all_buckets,
+            grouped_moments,
+            include_query_planner_debug=True,
+        )
+    )
+
+    assert [moment["bucket_id"] for moment in selected] == [target_bucket_id]
+    assert selected[0]["promoted_direct_seed"] is True
+    assert target_bucket_id in {moment["bucket_id"] for moment in candidates}
+    assert planner_debug["final_bucket_ids"] == [weak_bucket_id]
+
+
 def test_compound_query_preserves_distinct_anchor_cards(
     monkeypatch, test_config, bucket_mgr
 ):

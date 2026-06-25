@@ -66,7 +66,7 @@ from memory_layers import (
     moment_runtime_gate_debug,
 )
 from memory_metadata import normalize_memory_metadata
-from recall_policy import QueryAnchorPlan, RecallPolicy
+from recall_policy import QueryAnchorPlan, RecallPolicy, diffusion_seed_topic_term_has_specific_residue
 from memory_nodes import MemoryNodeStore
 from persona_engine import PersonaStateEngine
 from persona_event_selection import (
@@ -118,11 +118,6 @@ QUERY_PLANNER_GENERIC_TERMS = {
     "助手",
     "聊天",
     "对话",
-}
-DIFFUSION_SEED_GENERIC_TOPIC_FRAGMENTS = {
-    "代码",
-    "项目",
-    "改",
 }
 SOURCE_RECORD_FRAGMENT_TOPIC_STOPWORDS = QUERY_PLANNER_GENERIC_TERMS | {
     "一下",
@@ -7170,6 +7165,7 @@ class GatewayService:
                 selected.append(moment)
                 seen_buckets.add(bucket_id)
         self._add_timing_ms(timing_debug, "moment.pick_selected", stage_started_at)
+        selected = self._promote_reliable_moment_hits_to_direct_seed(query, selected, candidates)
 
         if selected:
             result = (selected[: self.inject_max_cards], candidates, suppressed_candidates, suppressed_buckets)
@@ -7198,6 +7194,81 @@ class GatewayService:
         if include_query_planner_debug:
             return (*result, query_planner_debug)
         return result
+
+    def _promote_reliable_moment_hits_to_direct_seed(
+        self,
+        query: str,
+        selected: list[dict],
+        candidates: list[dict],
+    ) -> list[dict]:
+        if self.inject_max_cards <= 0:
+            return []
+        result = [dict(moment) for moment in selected if isinstance(moment, dict)]
+        seen_buckets = {
+            str(moment.get("bucket_id") or "")
+            for moment in result
+            if moment.get("bucket_id")
+        }
+        if any(self._moment_can_promote_to_direct_seed(query, moment) for moment in result):
+            return result[: self.inject_max_cards]
+        promoted = []
+        for moment in candidates or []:
+            if not isinstance(moment, dict):
+                continue
+            bucket_id = str(moment.get("bucket_id") or "")
+            if not bucket_id or bucket_id in seen_buckets:
+                continue
+            if not self._moment_can_promote_to_direct_seed(query, moment):
+                continue
+            item = dict(moment)
+            item["promoted_direct_seed"] = True
+            promoted.append(item)
+        if not promoted:
+            return result[: self.inject_max_cards]
+        promoted.sort(key=lambda moment: self._moment_direct_seed_promotion_rank(query, moment))
+        for moment in promoted:
+            if len(result) >= self.inject_max_cards:
+                break
+            bucket_id = str(moment.get("bucket_id") or "")
+            if bucket_id and bucket_id not in seen_buckets:
+                result.append(moment)
+                seen_buckets.add(bucket_id)
+        if len(result) >= self.inject_max_cards:
+            replace_index = None
+            for index in range(len(result) - 1, -1, -1):
+                if not self._moment_can_promote_to_direct_seed(query, result[index]):
+                    replace_index = index
+                    break
+            if replace_index is not None:
+                replacement = next(
+                    (
+                        moment for moment in promoted
+                        if str(moment.get("bucket_id") or "") not in {
+                            str(item.get("bucket_id") or "")
+                            for idx, item in enumerate(result)
+                            if idx != replace_index
+                        }
+                    ),
+                    None,
+                )
+                if replacement is not None:
+                    result[replace_index] = replacement
+        return result[: self.inject_max_cards]
+
+    def _moment_can_promote_to_direct_seed(self, query: str, moment: dict) -> bool:
+        if not isinstance(moment, dict) or not can_moment_be_direct_seed(moment):
+            return False
+        if should_suppress_context_candidate(query, moment, self.relevance_options):
+            return False
+        return self._moment_has_reliable_diffusion_seed_signal(query, moment)
+
+    def _moment_direct_seed_promotion_rank(self, query: str, moment: dict) -> tuple:
+        return (
+            self._recall_rank(query, moment)[0],
+            -self._safe_float(moment.get("rerank_score"), 0.0),
+            -self._safe_float(moment.get("semantic_score"), 0.0),
+            -self._safe_float(moment.get("combined_score", moment.get("score")), 0.0),
+        )
 
     async def _rerank_moment_candidates(self, query: str, candidates: list[dict]) -> list[dict]:
         if not candidates or not getattr(self.reranker_engine, "enabled", False):
@@ -8289,16 +8360,7 @@ class GatewayService:
         return any(term.lower() in fields for term in terms)
 
     def _diffusion_seed_topic_term_has_specific_residue(self, term: object) -> bool:
-        residue = re.sub(
-            r"[^0-9a-z\u4e00-\u9fff_.:-]+",
-            "",
-            str(term or "").strip().lower(),
-        )
-        if not residue:
-            return False
-        for generic in sorted(DIFFUSION_SEED_GENERIC_TOPIC_FRAGMENTS, key=len, reverse=True):
-            residue = residue.replace(generic, "")
-        return bool(residue.strip())
+        return diffusion_seed_topic_term_has_specific_residue(term)
 
     def _diffusion_candidate_injection_decision(
         self,
