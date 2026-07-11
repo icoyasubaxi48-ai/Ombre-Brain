@@ -4852,26 +4852,76 @@ class GatewayService:
         payload: dict[str, Any],
         cache_control: dict[str, str],
     ) -> None:
-        attached = self._attach_cache_control_to_anthropic_content(payload, "system", cache_control)
+        # 断点 1：system 层
+        self._attach_cache_control_to_anthropic_content(payload, "system", cache_control)
+
+        # 断点 2：历史对话层，按 token 数找最佳断点
         messages = payload.get("messages", [])
         if not isinstance(messages, list):
             return
 
-        for message in reversed(messages[:-1]):
-            if not isinstance(message, dict):
+        breakpoint_idx = self._find_cache_breakpoint(messages, payload.get("model", ""))
+        if breakpoint_idx is not None:
+            self._attach_cache_control_to_anthropic_content(
+                messages[breakpoint_idx], "content", cache_control
+            )
+
+    @staticmethod
+    def _cache_min_tokens_for_model(model: str) -> int:
+        """各模型触发 prompt cache 的最低 token 阈值。"""
+        model_lower = str(model).lower()
+        if "opus" in model_lower:
+            return 4096
+        if "haiku" in model_lower:
+            return 4096
+        if "fable" in model_lower:
+            return 4096
+        # sonnet 及其他默认
+        return 2048
+
+    def _find_cache_breakpoint(self, messages: list[dict], model: str) -> int | None:
+        """
+        从后往前遍历 messages，跳过尾部约 4000 token，
+        然后继续往前累加 token，直到超过模型最低阈值，
+        选中的断点必须是 assistant 消息。
+        返回断点消息的索引，找不到返回 None。
+        """
+        if not messages:
+            return None
+
+        min_tokens = self._cache_min_tokens_for_model(model)
+        tail_budget = 4000
+
+        # 第一步：从尾部往前跳过约 4000 token 的尾巴
+        tail_tokens = 0
+        tail_cutoff = len(messages)  # 尾巴截止索引（exclusive）
+        for i in range(len(messages) - 1, -1, -1):
+            msg = messages[i]
+            if not isinstance(msg, dict):
                 continue
-            if self._attach_cache_control_to_anthropic_content(message, "content", cache_control):
-                attached = True
+            msg_tokens = count_tokens_approx(json.dumps(msg.get("content", "")))
+            if tail_tokens + msg_tokens > tail_budget:
+                tail_cutoff = i + 1
+                break
+            tail_tokens += msg_tokens
+        else:
+            # 全部消息都在尾巴预算内，没有可缓存区域
+            return None
+
+        # 第二步：在尾巴之前的部分，从后往前累加 token，找到超过阈值的 assistant 消息
+        accumulated = 0
+        candidate = None
+        for i in range(tail_cutoff - 1, -1, -1):
+            msg = messages[i]
+            if not isinstance(msg, dict):
+                continue
+            msg_tokens = count_tokens_approx(json.dumps(msg.get("content", "")))
+            accumulated += msg_tokens
+            if msg.get("role") == "assistant" and accumulated >= min_tokens:
+                candidate = i
                 break
 
-        if attached:
-            return
-
-        for message in reversed(messages):
-            if not isinstance(message, dict):
-                continue
-            if self._attach_cache_control_to_anthropic_content(message, "content", cache_control):
-                return
+        return candidate
 
     def _attach_cache_control_to_anthropic_content(
         self,
