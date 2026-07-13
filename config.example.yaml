@@ -111,7 +111,7 @@ dehydration:
   #   OMBRE_DEHYDRATION_BASE_URL
   #   OMBRE_DEHYDRATION_MODEL
   #   OMBRE_MODEL
-  max_tokens: 1024
+  max_tokens: 4096
   temperature: 0.1
 
 # --- Anchor / 长期锚点 ---
